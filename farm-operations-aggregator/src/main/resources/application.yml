@@ -1,0 +1,117 @@
+spring:
+  application:
+    name: farm-operations-aggregator
+  profiles:
+    active: dev
+
+  r2dbc:
+    url: r2dbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:farm_agg_read_db}
+    username: ${DB_USER:agg_user}
+    password: ${DB_PASSWORD:agg_password}
+    pool:
+      enabled: true
+      initial-size: 5
+      max-size: 20
+      max-idle-time: 30m
+      validation-query: SELECT 1
+
+  flyway:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:farm_agg_read_db} # Flyway requires JDBC URL
+    user: ${DB_USER:agg_user}
+    password: ${DB_PASSWORD:agg_password}
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: farm-operations-aggregator-group
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "com.thesss.platform.aggregators.event.dto.*,java.util.List,java.util.Map"
+        spring.json.use.type.headers: false # Set to true if type information is in headers
+        # If use.type.headers is false, you might need to configure default types or type mappings
+        # spring.json.value.default.type: "com.thesss.platform.aggregators.event.dto.BaseEventDTO" # Example if you have a base type
+        # Or configure type mappings if specific DTOs are not picked up automatically
+        # spring.json.type.mapping: "farmerRegistered:com.thesss.platform.aggregators.event.dto.farmer.FarmerRegisteredEventDTO,landCreated:com.thesss.platform.aggregators.event.dto.land.LandRecordCreatedEventDTO"
+      auto-offset-reset: earliest
+    listener:
+      concurrency: ${KAFKA_LISTENER_CONCURRENCY:3} # Number of threads per listener
+
+server:
+  port: ${SERVER_PORT:8082} # Different from other services if running locally
+
+logging:
+  level:
+    root: INFO
+    com.thesss.platform.aggregators: DEBUG
+    org.springframework.r2dbc: INFO
+    io.r2dbc.postgresql: INFO
+    org.springframework.kafka: INFO
+    org.flywaydb: INFO
+
+# Custom application properties
+app:
+  kafka:
+    topics:
+      farmer-events: ${KAFKA_TOPIC_FARMER_EVENTS:farm-data.farmer-service.events}
+      land-events: ${KAFKA_TOPIC_LAND_EVENTS:farm-data.land-service.events}
+      crop-events: ${KAFKA_TOPIC_CROP_EVENTS:farm-data.crop-service.events}
+  
+  # Debezium specific consumer properties if needed, typically handled by Kafka deserializer settings
+  # debezium:
+  #   schema.history.internal.kafka.topic: schema-changes.inventory (example, if embedded Debezium was used)
+
+  # For singleton views
+  system-stats-view:
+    id: "singleton_system_stats"
+  data-quality-metrics-view:
+    id: "singleton_data_quality_metrics"
+
+  # Active crop cycle statuses
+  active-crop-statuses: "PLANTED,GROWING,ACTIVE" # Comma-separated list
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+      sla:
+        http.server.requests: 50ms, 100ms, 200ms, 500ms, 1s
+
+# WebFlux specific configurations
+spring.webflux:
+  base-path: /farm-operations-aggregator # Optional: if you want a global base path for this service's APIs
+
+---
+spring:
+  config:
+    activate:
+      on-profile: test
+  r2dbc:
+    url: r2dbc:h2:mem:///testdb;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    username: sa
+    password:
+  flyway:
+    url: jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    user: sa
+    password:
+    enabled: true # Ensure Flyway runs for H2 in tests
+  kafka:
+    bootstrap-servers: localhost:9093 # Embedded Kafka for tests
+    consumer:
+      group-id: test-farm-operations-aggregator-group
+      auto-offset-reset: earliest
+
+logging:
+  level:
+    com.thesss.platform.aggregators: DEBUG
+    org.springframework.r2dbc: DEBUG # More verbose for test DB
+    io.r2dbc.h2: DEBUG
