@@ -1,0 +1,54 @@
+```gradle
+// Top-level build file where you can add configuration options common to all sub-projects/modules.
+
+buildscript {
+    ext {
+        buildToolsVersion = "34.0.0"
+        minSdkVersion = 23 // WatermelonDB needs 21+, react-native-maps often suggests 21+
+        compileSdkVersion = 34
+        targetSdkVersion = 34
+        ndkVersion = "26.1.10909125" // Or your preferred NDK version
+        kotlinVersion = "1.9.23" // Check compatibility with RN 0.74.1 and AGP
+        // For react-native-maps
+        googlePlayServicesAuthVersion = "19.2.0" // Or latest compatible
+        googlePlayServicesLocationVersion = "19.0.1" // Or latest compatible
+    }
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath("com.android.tools.build:gradle:8.3.0") // Matched with RN 0.74
+        classpath("com.facebook.react:react-native-gradle-plugin")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersion")
+        // NOTE: Do not place your application dependencies here; they belong
+        // in the individual module build.gradle files
+    }
+}
+
+allprojects {
+    repositories {
+        maven {
+            // All of React Native (JS, Obj-C sources, Android binaries) is installed from npm
+            url("$rootDir/../node_modules/react-native/android")
+        }
+        maven {
+            // Android JSC is installed from npm
+            url("$rootDir/../node_modules/jsc-android/dist")
+        }
+        google()
+        mavenCentral()
+        maven { url 'https://www.jitpack.io' } // For some libraries if needed
+    }
+}
+
+// Set this to true to create separate APKs per architecture
+// def enableSeparateBuildPerCPUArchitecture = false
+
+// Set this to true to build APKs that support 64-bit architectures
+// def enableProguardInReleaseBuilds = false
+
+// The HERMES_ENABLE_DEBUG_VM property is set in the `.gradle` file of the `React` project.
+// `HERMES_ENABLE_DEBUG_VM=true` along with `hermesFlags":["-Xes6-proxy"]` in `react-native.config.js`
+// allows to use Proxies with Hermes.
+```

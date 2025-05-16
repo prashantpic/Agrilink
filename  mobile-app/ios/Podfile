@@ -1,0 +1,147 @@
+```ruby
+require_relative '../node_modules/react-native/scripts/react_native_pods'
+require_relative '../node_modules/@react-native-community/cli-platform-ios/native_modules'
+
+platform :ios, '13.4' # Or higher as required by dependencies, RN 0.74 supports 13.4+
+
+# Calms cocoapods-pod-link warnings
+# See https://github.com/CocoaPods/CocoaPods/issues/12102
+def ignore_warnings_for_dependencies(installer, dependencies)
+  dependencies.each do |dependency|
+    next unless installer.pods_project.targets.map(&:name).include?(dependency)
+    installer.pods_project.targets.each do |target|
+      if target.name == dependency
+        target.build_configurations.each do |config|
+          # Suppress all warnings for this specific pod
+          config.build_settings['GCC_WARN_INHIBIT_ALL_WARNINGS'] = 'YES'
+        end
+      end
+    end
+  end
+end
+
+
+project 'mobileapp', :cvm => 'mobile-app.xcodeproj' # Assuming your project name is mobileapp
+
+target 'mobileapp' do
+  # Pods for mobileapp
+  # config = use_native_modules!
+  use_react_native!(
+    :path => config[:reactNativePath],
+    # to enable hermes on iOS, change `false` to `true` and then install pods
+    :hermes_enabled => ENV['RCT_HERMES_ENABLED'] == '1' 
+    # :fabric_enabled => flags[:fabric_enabled],
+    # :flipper_configuration => FlipperConfiguration.enabled,
+    # An absolute path to your application root.
+    # :app_path => "#{Pod::Config.instance.installation_root}/.."
+  )
+
+  # Flags change depending on the env values.
+  flags = get_default_flags()
+
+
+  # Dependencies from `package.json`
+  pod 'React-Core', :path => '../node_modules/react-native/'
+  # ... other React Native pods if not handled by use_react_native!
+
+  # WatermelonDB
+  pod 'WatermelonDB', :path => '../node_modules/@nozbe/watermelondb'
+  pod 'WatermelonDB/SQLite', :path => '../node_modules/@nozbe/watermelondb/native/ios' # For SQLite adapter
+
+  # React Native Maps
+  # If you are using Google Maps, you might need to configure API key in AppDelegate
+  pod 'react-native-maps', :path => '../node_modules/react-native-maps'
+  pod 'GoogleMaps' # Or 'Google-Maps-iOS-SDK' - check react-native-maps docs
+  # pod 'GoogleUtilities' # Often a dependency of GoogleMaps
+
+  # React Native Geolocation Service
+  pod 'RNGeolocation', :path => '../node_modules/react-native-geolocation-service'
+
+  # Other native modules from node_modules
+  pod 'RNCAsyncStorage', :path => '../node_modules/@react-native-async-storage/async-storage'
+  pod 'RNCMaskedView', :path => '../node_modules/@react-native-masked-view/masked-view' # Dependency for react-navigation
+  pod 'RNScreens', :path => '../node_modules/react-native-screens'
+  pod 'RNSafeAreaContext', :path => '../node_modules/react-native-safe-area-context'
+  pod 'RNGestureHandler', :path => '../node_modules/react-native-gesture-handler'
+  pod 'RNReanimated', :path => '../node_modules/react-native-reanimated'
+  pod 'RNCNetInfo', :path => '../node_modules/@react-native-community/netinfo'
+  pod 'RNKeychain', :path => '../node_modules/react-native-keychain'
+
+
+  # Permissions (Example: if react-native-geolocation-service requires explicit permission pods)
+  # Add this line if you need to ask for location permission
+  # pod 'Permission-LocationWhenInUse', :path => "../node_modules/react-native-permissions/ios/LocationWhenInUse.podspec"
+
+
+  # Flipper (Comment out if not using)
+  # React Native 0.71+ Flipper config
+  # Flipper uses the versions from Gemfile by default if available.
+  # Otherwise, it will install its own versions.
+  #
+  # flipper_config = ENV['NO_FLIPPER'] == "1" ? FlipperConfiguration.disabled : FlipperConfiguration.enabled
+  #
+  # if ENV['CI']
+  #   flipper_config = FlipperConfiguration.disabled
+  # end
+  #
+  # use_flipper!(flipper_config)
+  
+  # use_flipper!({ 'Flipper-Folly' => '2.6.10', 'Flipper' => '0.202.0', 'Flipper-IDB' => '0.202.0', 'Flipper-Boost-iOSX' => '1.82.0.1' })
+  # Flipper iOS SDK version, if needed. Change the version as per your requirement.
+  $FlipperSDKVersion = '0.202.0' # Or other compatible version
+
+  use_flipper!(versions: {
+    'Flipper' => $FlipperSDKVersion,
+    'Flipper-Boost-iOSX' => '~> 1.82.0', # Use a version specifier
+    'Flipper-DoubleConversion' => '~> 3.2.1',
+    'Flipper-Fmt' => '~> 9.1.0',
+    'Flipper-Folly' => '~> 2.6.10',
+    'Flipper-Glog' => '~> 0.6.0',
+    'Flipper-PeerTalk' => '~> 0.0.4',
+    'Flipper-RSocket' => '~> 1.6.1',
+  })
+
+
+  post_install do |installer|
+    # Flipper RSocket has an issue with Xcode 14.3 currently (Nov 2023).
+    # This is a temporary workaround.
+    # See https://github.com/facebook/flipper/issues/5390
+    # installer.pods_project.targets.each do |target|
+    #   if target.name == 'Flipper-RSocket'
+    #     target.build_configurations.each do |config|
+    #       config.build_settings['GCC_WARN_PEDANTIC'] = 'YES'
+    #     end
+    #   end
+    # end
+    
+    # React Native specific post install steps
+    react_native_post_install(installer)
+    
+    # Fix for duplicate symbols with react-native-webview and Flipper-Folly
+    # (if you were to use react-native-webview)
+    # fix_flipper_package_json_issue(installer)
+
+    # Ignore warnings for specific dependencies
+    # ignore_warnings_for_dependencies(installer, ['GoogleUtilities', 'Yoga'])
+
+    __apply_Xcode_12_5_M1_post_install_workaround(installer)
+  end
+end
+
+# Function to handle a common issue with Flipper and package.json paths
+# def fix_flipper_package_json_issue(installer)
+#   installer.pods_project.targets.each do |target|
+#     if target.name == 'Flipper-Folly'
+#       target.build_phases.each do |build_phase|
+#         if build_phase.respond_to?(:name) && build_phase.name == '[CP] Copy XCFrameworks'
+#           build_phase.shell_script = build_phase.shell_script.gsub(
+#             '# Find and delete the dummy source files',
+#             "find \"${PODS_ROOT}/../../node_modules/react-native/scripts\" -type f -name 'package.json' -delete\n\n# Find and delete the dummy source files"
+#           )
+#         end
+#       end
+#     end
+#   end
+# end
+
+```
