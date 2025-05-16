@@ -15,42 +15,47 @@ import reactor.core.publisher.Mono;
 public class ResponseLoggingFilter implements GlobalFilter, Ordered {
 
     private static final Logger log = LoggerFactory.getLogger(ResponseLoggingFilter.class);
+    private static final String CORRELATION_ID_MDC_KEY = "correlationId";
+
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
         return chain.filter(exchange)
             .doFinally(signalType -> {
-                // Retrieve correlationId from MDC, which should have been set by RequestLoggingFilter
-                // or from exchange attributes if preferred.
-                String correlationId = MDC.get(RequestLoggingFilter.CORRELATION_ID_MDC_KEY);
-                if (correlationId == null) { // Fallback if MDC was cleared or not set
-                    correlationId = exchange.getResponse().getHeaders().getFirst(RequestLoggingFilter.CORRELATION_ID_HEADER_NAME);
+                ServerHttpResponse response = exchange.getResponse();
+                Long startTime = exchange.getAttribute(RequestLoggingFilter.REQUEST_START_TIME_ATTR);
+                String correlationId = exchange.getAttribute(RequestLoggingFilter.CORRELATION_ID_ATTR);
+
+                if (correlationId != null) {
+                    MDC.put(CORRELATION_ID_MDC_KEY, correlationId);
                 }
 
-                try (MDC.MDCCloseable mdcCloseable = MDC.putCloseable(RequestLoggingFilter.CORRELATION_ID_MDC_KEY, correlationId != null ? correlationId : "unknown")) {
-                    ServerHttpResponse response = exchange.getResponse();
-                    Long startTime = exchange.getAttribute(RequestLoggingFilter.REQUEST_START_TIME_ATTR);
-                    long duration = -1;
-                    if (startTime != null) {
-                        duration = System.currentTimeMillis() - startTime;
-                    }
+                long duration = -1;
+                if (startTime != null) {
+                    duration = System.currentTimeMillis() - startTime;
+                }
 
-                    log.info("Outgoing Response: CorrelationID={}, Status={}, Duration={}ms, Headers={}, ContentLength={}",
-                            correlationId,
-                            response.getStatusCode(),
-                            duration,
-                            response.getHeaders(), // Be cautious logging all headers
-                            response.getHeaders().getContentLength() // May be -1 if not set
-                    );
-                } catch (Exception e) {
-                    log.warn("Error during response logging", e);
+                Integer statusCode = response.getRawStatusCode();
+                Long contentLength = response.getHeaders().getContentLength();
+
+
+                log.info("Outgoing response: Status={}, Duration={}ms, ContentLength={}, CorrelationID={}, Headers={}",
+                        statusCode,
+                        duration,
+                        contentLength == -1 ? "N/A" : contentLength,
+                        correlationId,
+                        response.getHeaders());
+
+                if (correlationId != null) {
+                    MDC.remove(CORRELATION_ID_MDC_KEY);
                 }
             });
     }
 
     @Override
     public int getOrder() {
-        // Run late, but allow for very late infrastructure filters like NettyWriteResponseFilter
-        return Ordered.LOWEST_PRECEDENCE - 10;
+        // Run this filter late in the chain, but before the actual send.
+        // NettyWriteResponseFilter is -1. We want to log after it has processed the response status and headers.
+        return Ordered.LOWEST_PRECEDENCE - 2;
     }
 }

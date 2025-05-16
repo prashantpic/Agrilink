@@ -17,10 +17,11 @@ import java.util.UUID;
 public class RequestLoggingFilter implements GlobalFilter, Ordered {
 
     private static final Logger log = LoggerFactory.getLogger(RequestLoggingFilter.class);
-    public static final String CORRELATION_ID_HEADER_NAME = "X-Request-ID";
-    public static final String TRACEPARENT_HEADER_NAME = "traceparent"; // W3C Trace Context
-    public static final String CORRELATION_ID_MDC_KEY = "correlationId";
+    private static final String CORRELATION_ID_HEADER_NAME = "X-Request-ID";
+    private static final String CORRELATION_ID_MDC_KEY = "correlationId";
     public static final String REQUEST_START_TIME_ATTR = "requestStartTime";
+    public static final String CORRELATION_ID_ATTR = "correlationIdAttr";
+
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
@@ -28,50 +29,34 @@ public class RequestLoggingFilter implements GlobalFilter, Ordered {
         exchange.getAttributes().put(REQUEST_START_TIME_ATTR, startTime);
 
         ServerHttpRequest request = exchange.getRequest();
-        String correlationId = getOrGenerateCorrelationId(request);
-
-        // Add correlation ID to response headers
-        exchange.getResponse().getHeaders().add(CORRELATION_ID_HEADER_NAME, correlationId);
-
-        // Using MDC.putCloseableContext for try-with-resources style MDC management in reactive chains
-        return Mono.deferContextual(contextView -> {
-            try (MDC.MDCCloseable mdcCloseable = MDC.putCloseable(CORRELATION_ID_MDC_KEY, correlationId)) {
-                log.info("Incoming Request: Method={}, URI={}, Path={}, Query={}, RemoteAddress={}, Headers={}, CorrelationID={}",
-                        request.getMethod(),
-                        request.getURI().toString(),
-                        request.getPath(),
-                        request.getQueryParams(),
-                        request.getRemoteAddress(),
-                        request.getHeaders(), // Be cautious logging all headers in production
-                        correlationId);
-            }
-            return chain.filter(exchange);
-        });
-    }
-
-    private String getOrGenerateCorrelationId(ServerHttpRequest request) {
         String correlationId = request.getHeaders().getFirst(CORRELATION_ID_HEADER_NAME);
-        if (correlationId == null || correlationId.isEmpty()) {
-            correlationId = request.getHeaders().getFirst(TRACEPARENT_HEADER_NAME);
-            // If traceparent exists, we could parse traceId from it, or use the whole string.
-            // For simplicity, if traceparent exists but X-Request-ID doesn't, we use traceparent or generate new.
-            // Here, let's prioritize X-Request-ID, then generate new if neither found.
-            // A more sophisticated approach would parse traceparent for trace ID.
-            if (correlationId == null || correlationId.isEmpty()) {
-                 correlationId = UUID.randomUUID().toString();
-                 log.debug("Generated new correlation ID: {}", correlationId);
-            } else {
-                 log.debug("Using traceparent as correlation ID: {}", correlationId);
-            }
-        } else {
-            log.debug("Using existing correlation ID from header {}: {}", CORRELATION_ID_HEADER_NAME, correlationId);
+        if (correlationId == null || correlationId.isBlank()) {
+            correlationId = UUID.randomUUID().toString();
         }
-        return correlationId;
+        MDC.put(CORRELATION_ID_MDC_KEY, correlationId);
+        exchange.getAttributes().put(CORRELATION_ID_ATTR, correlationId);
+
+        // Add correlationId to response headers
+        String finalCorrelationId = correlationId;
+        exchange.getResponse().beforeCommit(() -> {
+            exchange.getResponse().getHeaders().add(CORRELATION_ID_HEADER_NAME, finalCorrelationId);
+            return Mono.empty();
+        });
+
+        log.info("Incoming request: Method={}, URI={}, Headers={}, RemoteAddress={}, CorrelationID={}",
+                request.getMethod(),
+                request.getURI(),
+                request.getHeaders(),
+                request.getRemoteAddress(),
+                correlationId);
+
+        return chain.filter(exchange)
+                .doFinally(signalType -> MDC.remove(CORRELATION_ID_MDC_KEY));
     }
 
     @Override
     public int getOrder() {
-        // Run early, but allow for very early infrastructure filters
+        // Run this filter early in the chain
         return Ordered.HIGHEST_PRECEDENCE + 10;
     }
 }

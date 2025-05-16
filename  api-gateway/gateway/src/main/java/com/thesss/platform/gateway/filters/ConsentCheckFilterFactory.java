@@ -1,30 +1,36 @@
 package com.thesss.platform.gateway.filters;
 
 import com.thesss.platform.gateway.service.ConsentServiceClient;
-import com.thesss.platform.gateway.dto.ConsentStatusResponse; // Assuming this DTO exists
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cloud.gateway.filter.GatewayFilter;
 import org.springframework.cloud.gateway.filter.factory.AbstractGatewayFilterFactory;
+import org.springframework.cloud.gateway.support.ServerWebExchangeUtils;
+import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.server.reactive.ServerHttpResponse;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
-import org.springframework.cloud.gateway.support.ServerWebExchangeUtils;
-
 
 @Component
+@Slf4j
 public class ConsentCheckFilterFactory extends AbstractGatewayFilterFactory<ConsentCheckFilterFactory.Config> {
 
-    private static final Logger log = LoggerFactory.getLogger(ConsentCheckFilterFactory.class);
-
     private final ConsentServiceClient consentServiceClient;
+
+    @Value("${gateway.feature-toggles.enable-consent-filter-for-farmer-data-api:true}")
+    private boolean consentFilterEnabled;
 
     @Autowired
     public ConsentCheckFilterFactory(ConsentServiceClient consentServiceClient) {
@@ -35,66 +41,76 @@ public class ConsentCheckFilterFactory extends AbstractGatewayFilterFactory<Cons
     @Override
     public GatewayFilter apply(Config config) {
         return (exchange, chain) -> {
-            if (!StringUtils.hasText(config.getDataScope())) {
-                log.error("DataScope is not configured for ConsentCheckFilter. Denying request.");
-                return forbidden(exchange, "Consent check configuration error: DataScope missing.");
+            if (!consentFilterEnabled) {
+                log.debug("Consent check filter is disabled globally. Skipping consent check for dataScope: {}", config.getDataScope());
+                return chain.filter(exchange);
             }
 
-            // Extract farmerId from path variables
-            // Assumes a route pattern like /api/v1/farmer-data/{farmerId}/**
-            Map<String, String> uriVariables = ServerWebExchangeUtils.getUriTemplateVariables(exchange);
-            String farmerId = uriVariables.get("farmerId"); // Ensure your route definition captures 'farmerId'
+            if (!StringUtils.hasText(config.getDataScope())) {
+                log.error("Data scope is not configured for ConsentCheckFilter. Denying access.");
+                return errorResponse(exchange, HttpStatus.INTERNAL_SERVER_ERROR, "Consent check configuration error: Data scope missing.");
+            }
+
+            // Extract Farmer ID from path variables
+            Map<String, String> uriVariables = exchange.getAttribute(ServerWebExchangeUtils.URI_TEMPLATE_VARIABLES_ATTRIBUTE);
+            String farmerId = (uriVariables != null) ? uriVariables.get("farmerId") : null;
 
             if (!StringUtils.hasText(farmerId)) {
-                log.warn("FarmerId not found in path variables for consent check. URI: {}", exchange.getRequest().getURI());
-                return forbidden(exchange, "Farmer identifier missing for consent check.");
+                // Fallback: Try to get farmerId from a pre-authenticated principal or custom header if available
+                // For this example, we rely on path variable. If not present, it's a configuration error or bad request.
+                log.warn("Farmer ID not found in path variables for consent check. Path: {}", exchange.getRequest().getPath());
+                return errorResponse(exchange, HttpStatus.BAD_REQUEST, "Farmer ID missing for consent check.");
             }
 
-            // Extract clientId from attributes set by a previous authentication filter
+            // Extract Client ID (assuming it was set by AuthenticationFilterFactory)
             String clientId = exchange.getAttribute(AuthenticationFilterFactory.AUTHENTICATED_CLIENT_ID_ATTR);
             if (!StringUtils.hasText(clientId)) {
-                // Fallback: try to get from JWT principal if available and applicable
-                // For now, strict dependency on API Key auth context
-                log.warn("ClientId not found in exchange attributes for consent check. URI: {}", exchange.getRequest().getURI());
-                return forbidden(exchange, "Client identifier missing for consent check.");
+                log.warn("Client ID not found in exchange attributes for consent check. API Key authentication might be missing or did not set the attribute.");
+                return errorResponse(exchange, HttpStatus.UNAUTHORIZED, "Client identification missing for consent check.");
             }
 
-            log.debug("Performing consent check for FarmerId: {}, ClientId: {}, DataScope: {}", farmerId, clientId, config.getDataScope());
+            log.debug("Performing consent check for Farmer ID: {}, Client ID: {}, Data Scope: {}", farmerId, clientId, config.getDataScope());
 
             return consentServiceClient.verifyConsent(farmerId, config.getDataScope(), clientId)
-                .flatMap(consentResponse -> {
-                    if (consentResponse.isConsentGranted()) {
-                        log.info("Consent granted for FarmerId: {}, ClientId: {}, DataScope: {}", farmerId, clientId, config.getDataScope());
+                .flatMap(consentStatusResponse -> {
+                    if (consentStatusResponse.isConsentGranted()) {
+                        log.info("Consent granted for Farmer ID: {}, Client ID: {}, Data Scope: {}", farmerId, clientId, config.getDataScope());
                         return chain.filter(exchange);
                     } else {
-                        log.warn("Consent denied for FarmerId: {}, ClientId: {}, DataScope: {}", farmerId, clientId, config.getDataScope());
-                        return forbidden(exchange, "Consent not granted for the requested data access.");
+                        log.warn("Consent denied for Farmer ID: {}, Client ID: {}, Data Scope: {}", farmerId, clientId, config.getDataScope());
+                        return errorResponse(exchange, HttpStatus.FORBIDDEN, "Access denied. Required consent not granted for the requested data scope.");
                     }
                 })
-                .onErrorResume(ex -> {
-                    log.error("Error during consent verification for FarmerId: {}, ClientId: {}, DataScope: {}",
-                            farmerId, clientId, config.getDataScope(), ex);
-                    return forbidden(exchange, "Consent verification failed.");
+                .onErrorResume(throwable -> {
+                    log.error("Error during consent verification call for Farmer ID: {}, Client ID: {}, Data Scope: {}", farmerId, clientId, config.getDataScope(), throwable);
+                    return errorResponse(exchange, HttpStatus.INTERNAL_SERVER_ERROR, "Consent verification service error.");
                 });
         };
     }
 
-    private Mono<Void> forbidden(ServerWebExchange exchange, String message) {
-        exchange.getResponse().setStatusCode(HttpStatus.FORBIDDEN);
-        // Optionally, write a standard error response body
-        // For now, just setting status and completing.
-        return exchange.getResponse().setComplete();
+    private Mono<Void> errorResponse(ServerWebExchange exchange, HttpStatus status, String message) {
+        ServerHttpResponse response = exchange.getResponse();
+        response.setStatusCode(status);
+        response.getHeaders().setContentType(MediaType.APPLICATION_JSON);
+        // Using a simplified error structure here, actual response should use ApiErrorResponse via GlobalExceptionHandler
+        String errorBody = String.format("{\"timestamp\":%d,\"status\":%d,\"error\":\"%s\",\"message\":\"%s\",\"path\":\"%s\"}",
+                System.currentTimeMillis(),
+                status.value(),
+                status.getReasonPhrase(),
+                message,
+                exchange.getRequest().getPath().value());
+        DataBuffer buffer = response.bufferFactory().wrap(errorBody.getBytes(StandardCharsets.UTF_8));
+        return response.writeWith(Mono.just(buffer));
     }
 
+    @Data
+    @NoArgsConstructor
     public static class Config {
         private String dataScope;
-
-        public String getDataScope() {
-            return dataScope;
-        }
-
-        public void setDataScope(String dataScope) {
-            this.dataScope = dataScope;
-        }
+    }
+    
+    @Override
+    public List<String> shortcutFieldOrder() {
+        return Collections.singletonList("dataScope");
     }
 }

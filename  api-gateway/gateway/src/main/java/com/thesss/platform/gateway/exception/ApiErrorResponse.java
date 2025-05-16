@@ -14,9 +14,9 @@ import java.util.List;
 public class ApiErrorResponse {
     private long timestamp;
     private int status;
-    private String error; // e.g., "Not Found", "Bad Request"
-    private String message; // Detailed human-readable message
-    private String path;
+    private String error; // HTTP status phrase (e.g., "Not Found", "Bad Request")
+    private String message; // Descriptive error message
+    private String path; // Request path
     private String errorCode; // Optional application-specific error code
-    private List<String> details; // Optional list for validation errors or sub-errors
+    private List<String> details; // Optional list for validation errors or more specific info
 }

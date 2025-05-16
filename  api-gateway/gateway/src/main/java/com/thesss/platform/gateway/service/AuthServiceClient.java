@@ -7,7 +7,7 @@ import reactor.core.publisher.Mono;
 public interface AuthServiceClient {
 
     /**
-     * Validates an API key with the external authentication service.
+     * Validates an API key against the authentication service.
      *
      * @param apiKey The API key to validate.
      * @return A Mono emitting {@link ApiKeyValidationResponse} containing validation status and details.
@@ -15,8 +15,8 @@ public interface AuthServiceClient {
     Mono<ApiKeyValidationResponse> validateApiKey(String apiKey);
 
     /**
-     * Introspects a token (e.g., opaque token) with the external authentication service.
-     * Typically used if Spring Security's built-in JWT/OIDC validation is not sufficient.
+     * Introspects a token (e.g., opaque token) against the authentication service.
+     * Useful for token types not directly handled by Spring Security's OAuth2 resource server.
      *
      * @param token The token to introspect.
      * @return A Mono emitting {@link TokenIntrospectionResponse} containing token details.

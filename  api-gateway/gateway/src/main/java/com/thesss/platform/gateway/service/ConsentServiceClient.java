@@ -6,11 +6,11 @@ import reactor.core.publisher.Mono;
 public interface ConsentServiceClient {
 
     /**
-     * Verifies farmer consent for a specific data scope and third-party client.
+     * Verifies if a farmer has granted consent for a specific data scope to a third-party client.
      *
      * @param farmerId The unique identifier of the farmer.
-     * @param dataScope The scope of data for which consent is being checked (e.g., "personal_info", "farm_details").
-     * @param thirdPartyClientId The identifier of the third-party client requesting access.
+     * @param dataScope The specific scope of data access being requested (e.g., "farm-details", "crop-history").
+     * @param thirdPartyClientId The unique identifier of the third-party client requesting access.
      * @return A Mono emitting {@link ConsentStatusResponse} indicating whether consent is granted and relevant details.
      */
     Mono<ConsentStatusResponse> verifyConsent(String farmerId, String dataScope, String thirdPartyClientId);
