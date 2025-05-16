@@ -1,0 +1,85 @@
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:camunda="http://camunda.org/schema/1.0/bpmn" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="Definitions_1" targetNamespace="http://bpmn.io/schema/bpmn" exporter="Camunda Modeler" exporterVersion="5.20.0">
+  <bpmn:process id="farmerRegistrationApprovalProcess" name="Farmer Registration Approval Process" isExecutable="true">
+    <bpmn:documentation>Orchestrates the steps for reviewing and approving new farmer registrations.</bpmn:documentation>
+    <bpmn:startEvent id="StartEvent_FarmerRegApproval" name="Farmer Registration Submitted">
+      <bpmn:outgoing>Flow_To_AssignApprover</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="UserTask_AssignApprover" name="Assign Farmer Registration Approver" camunda:candidateGroups="farmerRegistrationApprovers">
+      <bpmn:documentation>A user with the 'farmerRegistrationApprovers' group claims this task to review and assign a specific approver or can directly approve if authorized.</bpmn:documentation>
+      <bpmn:extensionElements>
+        <camunda:taskListener event="create" class="com.thesss.platform.workflows.listeners.UserTaskAssignmentListener" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_To_AssignApprover</bpmn:incoming>
+      <bpmn:outgoing>Flow_To_ApproverReview</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:userTask id="UserTask_ApproverReview" name="Review Farmer Registration">
+      <bpmn:documentation>Approver reviews the farmer registration details and makes a decision.</bpmn:documentation>
+      <bpmn:incoming>Flow_To_ApproverReview</bpmn:incoming>
+      <bpmn:outgoing>Flow_To_DecisionGateway</bpmn:outgoing>
+      <bpmn:extensionElements>
+        <camunda:formData>
+          <camunda:formField id="isApproved" label="Approve Registration?" type="boolean" />
+          <camunda:formField id="approvalComments" label="Approval Comments" type="string" />
+        </camunda:formData>
+        <camunda:taskListener event="complete" delegateExpression="${setApprovalOutcomeDelegate}" />
+      </bpmn:extensionElements>
+    </bpmn:userTask>
+    <bpmn:exclusiveGateway id="Gateway_Decision" name="Approved?">
+      <bpmn:incoming>Flow_To_DecisionGateway</bpmn:incoming>
+      <bpmn:outgoing>Flow_To_UpdateStatusApproved</bpmn:outgoing>
+      <bpmn:outgoing>Flow_To_UpdateStatusRejected</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="ServiceTask_UpdateFarmerStatusApproved" name="Update Farmer Status to Approved" camunda:delegateExpression="${updateFarmerStatusCommandDelegate}">
+      <bpmn:incoming>Flow_To_UpdateStatusApproved</bpmn:incoming>
+      <bpmn:outgoing>Flow_To_LogHistoryApproved</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="ServiceTask_LogFarmerHistoryApproved" name="Log Approval History" camunda:delegateExpression="${logFarmerApprovalHistoryDelegate}">
+      <bpmn:incoming>Flow_To_LogHistoryApproved</bpmn:incoming>
+      <bpmn:outgoing>Flow_To_NotifyApplicantApproved</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="ServiceTask_NotifyApplicantApproved" name="Notify Applicant of Approval" camunda:delegateExpression="${sendWorkflowStatusUpdateNotificationDelegate}">
+      <bpmn:incoming>Flow_To_NotifyApplicantApproved</bpmn:incoming>
+      <bpmn:outgoing>Flow_To_EndApproved</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="EndEvent_FarmerRegApproved" name="Farmer Registration Approved">
+      <bpmn:incoming>Flow_To_EndApproved</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:serviceTask id="ServiceTask_UpdateFarmerStatusRejected" name="Update Farmer Status to Rejected" camunda:delegateExpression="${updateFarmerStatusCommandDelegate}">
+      <bpmn:incoming>Flow_To_UpdateStatusRejected</bpmn:incoming>
+      <bpmn:outgoing>Flow_To_LogHistoryRejected</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="ServiceTask_LogFarmerHistoryRejected" name="Log Rejection History" camunda:delegateExpression="${logFarmerApprovalHistoryDelegate}">
+      <bpmn:incoming>Flow_To_LogHistoryRejected</bpmn:incoming>
+      <bpmn:outgoing>Flow_To_NotifyApplicantRejected</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="ServiceTask_NotifyApplicantRejected" name="Notify Applicant of Rejection" camunda:delegateExpression="${sendWorkflowStatusUpdateNotificationDelegate}">
+      <bpmn:incoming>Flow_To_NotifyApplicantRejected</bpmn:incoming>
+      <bpmn:outgoing>Flow_To_EndRejected</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="EndEvent_FarmerRegRejected" name="Farmer Registration Rejected">
+      <bpmn:incoming>Flow_To_EndRejected</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_To_AssignApprover" sourceRef="StartEvent_FarmerRegApproval" targetRef="UserTask_AssignApprover" />
+    <bpmn:sequenceFlow id="Flow_To_ApproverReview" sourceRef="UserTask_AssignApprover" targetRef="UserTask_ApproverReview" />
+    <bpmn:sequenceFlow id="Flow_To_DecisionGateway" sourceRef="UserTask_ApproverReview" targetRef="Gateway_Decision" />
+    <bpmn:sequenceFlow id="Flow_To_UpdateStatusApproved" name="Yes" sourceRef="Gateway_Decision" targetRef="ServiceTask_UpdateFarmerStatusApproved">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${isApproved == true}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_To_LogHistoryApproved" sourceRef="ServiceTask_UpdateFarmerStatusApproved" targetRef="ServiceTask_LogFarmerHistoryApproved" />
+    <bpmn:sequenceFlow id="Flow_To_NotifyApplicantApproved" sourceRef="ServiceTask_LogFarmerHistoryApproved" targetRef="ServiceTask_NotifyApplicantApproved" />
+    <bpmn:sequenceFlow id="Flow_To_EndApproved" sourceRef="ServiceTask_NotifyApplicantApproved" targetRef="EndEvent_FarmerRegApproved" />
+    <bpmn:sequenceFlow id="Flow_To_UpdateStatusRejected" name="No" sourceRef="Gateway_Decision" targetRef="ServiceTask_UpdateFarmerStatusRejected">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${isApproved == false}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_To_LogHistoryRejected" sourceRef="ServiceTask_UpdateFarmerStatusRejected" targetRef="ServiceTask_LogFarmerHistoryRejected" />
+    <bpmn:sequenceFlow id="Flow_To_NotifyApplicantRejected" sourceRef="ServiceTask_LogFarmerHistoryRejected" targetRef="ServiceTask_NotifyApplicantRejected" />
+    <bpmn:sequenceFlow id="Flow_To_EndRejected" sourceRef="ServiceTask_NotifyApplicantRejected" targetRef="EndEvent_FarmerRegRejected" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="farmerRegistrationApprovalProcess">
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>
+```

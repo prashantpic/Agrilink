@@ -1,0 +1,99 @@
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:camunda="http://camunda.org/schema/1.0/bpmn" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="Definitions_SyncConflict" targetNamespace="http://bpmn.io/schema/bpmn" exporter="Camunda Modeler" exporterVersion="5.20.0">
+  <bpmn:process id="syncConflictResolutionProcess" name="Synchronization Conflict Resolution Process" isExecutable="true">
+    <bpmn:documentation>Manages the workflow for resolving data synchronization conflicts identified during offline data synchronization, requiring manual intervention.</bpmn:documentation>
+    <bpmn:startEvent id="StartEvent_SyncConflict" name="Sync Conflict Detected">
+      <bpmn:outgoing>Flow_To_AssignResolver</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="UserTask_AssignConflictResolver" name="Assign Conflict Resolver" camunda:candidateGroups="conflictResolvers">
+      <bpmn:documentation>A user from 'conflictResolvers' group is assigned or claims this task. The actual assignment might be refined by a listener based on conflict details (e.g., entityType from syncConflictData).</bpmn:documentation>
+      <bpmn:extensionElements>
+        <camunda:taskListener event="create" delegateExpression="${assignApproverDelegate}" />
+        <!-- The assignApproverDelegate could be generic enough to handle this, or a specific assignConflictResolverDelegate may be used.
+             It would use processVariables like syncConflictData.entityType to determine candidates. -->
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_To_AssignResolver</bpmn:incoming>
+      <bpmn:outgoing>Flow_To_ResolveConflictTask</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:userTask id="UserTask_ResolveConflict" name="Resolve Data Conflict">
+      <bpmn:documentation>Resolver reviews conflict details (server vs. offline versions) and provides resolution data.</bpmn:documentation>
+      <bpmn:incoming>Flow_To_ResolveConflictTask</bpmn:incoming>
+      <bpmn:outgoing>Flow_To_ApplyResolution</bpmn:outgoing>
+      <bpmn:extensionElements>
+        <camunda:formData>
+          <!-- Form fields to display conflict details from 'syncConflictData' -->
+          <camunda:formField id="conflictId_display" label="Conflict ID" type="string" defaultValue="${syncConflictData.conflictId}" >
+             <camunda:properties>
+                <camunda:property id="readonly" value="true"/>
+             </camunda:properties>
+          </camunda:formField>
+          <camunda:formField id="entityType_display" label="Entity Type" type="string" defaultValue="${syncConflictData.entityType}" >
+             <camunda:properties>
+                <camunda:property id="readonly" value="true"/>
+             </camunda:properties>
+          </camunda:formField>
+           <camunda:formField id="entityId_display" label="Entity ID" type="string" defaultValue="${syncConflictData.entityId}" >
+             <camunda:properties>
+                <camunda:property id="readonly" value="true"/>
+             </camunda:properties>
+          </camunda:formField>
+          <camunda:formField id="offlineVersion_display" label="Offline Version Details" type="string" defaultValue="${syncConflictData.offlineVersionDetails}" >
+             <camunda:properties>
+                <camunda:property id="readonly" value="true"/>
+             </camunda:properties>
+          </camunda:formField>
+          <camunda:formField id="serverVersion_display" label="Server Version Details" type="string" defaultValue="${syncConflictData.serverVersionDetails}" >
+             <camunda:properties>
+                <camunda:property id="readonly" value="true"/>
+             </camunda:properties>
+          </camunda:formField>
+          <!-- Form fields for capturing resolution -->
+          <camunda:formField id="resolutionType" label="Resolution Type (e.g., MERGE_OFFLINE, MERGE_SERVER, MANUAL_DATA)" type="string" />
+          <camunda:formField id="resolvedData" label="Resolved Data (JSON string)" type="string" />
+          <camunda:formField id="resolutionComments" label="Resolution Comments" type="string" />
+        </camunda:formData>
+        <!-- On task completion, resolutionType and resolvedData are stored as process variables -->
+        <!-- These can then be read by the 'ApplyConflictResolutionDelegate' -->
+        <camunda:taskListener event="complete">
+          <camunda:script scriptFormat="javascript">
+            var resolutionType = task.getVariableLocal("resolutionType");
+            var resolvedData = task.getVariableLocal("resolvedData");
+            var resolutionComments = task.getVariableLocal("resolutionComments");
+            var resolvedByUserId = task.assignee; // Or fetch authenticated user
+
+            var syncConflictData = execution.getVariable("syncConflictData");
+            syncConflictData.setResolutionType(resolutionType);
+            syncConflictData.setResolvedData(resolvedData);
+            syncConflictData.setResolutionComments(resolutionComments); // Assuming SyncConflictData DTO has this field
+            syncConflictData.setResolvedByUserId(resolvedByUserId);
+            execution.setVariable("syncConflictData", syncConflictData);
+          </camunda:script>
+        </camunda:taskListener>
+      </bpmn:extensionElements>
+    </bpmn:userTask>
+    <bpmn:serviceTask id="ServiceTask_ApplyResolution" name="Apply Conflict Resolution" camunda:delegateExpression="${applyConflictResolutionDelegate}">
+      <bpmn:documentation>Applies the resolved data to the master system using the 'syncConflictData' process variable which now includes resolution details.</bpmn:documentation>
+      <bpmn:incoming>Flow_To_ApplyResolution</bpmn:incoming>
+      <bpmn:outgoing>Flow_To_NotifyParties</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="ServiceTask_NotifyParties" name="Notify Relevant Parties" camunda:delegateExpression="${sendWorkflowStatusUpdateNotificationDelegate}">
+      <bpmn:documentation>Notifies the original submitter or other involved parties about the conflict resolution outcome. The delegate needs to determine recipients based on syncConflictData or other variables.</bpmn:documentation>
+      <bpmn:incoming>Flow_To_NotifyParties</bpmn:incoming>
+      <bpmn:outgoing>Flow_To_EndConflictResolved</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="EndEvent_SyncConflictResolved" name="Sync Conflict Resolved">
+      <bpmn:incoming>Flow_To_EndConflictResolved</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_To_AssignResolver" sourceRef="StartEvent_SyncConflict" targetRef="UserTask_AssignConflictResolver" />
+    <bpmn:sequenceFlow id="Flow_To_ResolveConflictTask" sourceRef="UserTask_AssignConflictResolver" targetRef="UserTask_ResolveConflict" />
+    <bpmn:sequenceFlow id="Flow_To_ApplyResolution" sourceRef="UserTask_ResolveConflict" targetRef="ServiceTask_ApplyResolution" />
+    <bpmn:sequenceFlow id="Flow_To_NotifyParties" sourceRef="ServiceTask_ApplyResolution" targetRef="ServiceTask_NotifyParties" />
+    <bpmn:sequenceFlow id="Flow_To_EndConflictResolved" sourceRef="ServiceTask_NotifyParties" targetRef="EndEvent_SyncConflictResolved" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_SyncConflict">
+    <bpmndi:BPMNPlane id="BPMNPlane_SyncConflict" bpmnElement="syncConflictResolutionProcess">
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>
+```

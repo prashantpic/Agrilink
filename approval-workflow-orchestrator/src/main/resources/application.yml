@@ -1,0 +1,106 @@
+```yaml
+server:
+  port: 8082 # Port for the approval-workflow-orchestrator
+
+spring:
+  application:
+    name: approval-workflow-orchestrator
+  datasource: # Camunda requires a datasource
+    url: jdbc:h2:mem:camunda-db;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    username: sa
+    password:
+    driverClassName: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update # For H2, 'update' or 'create-drop' is fine for dev
+    database-platform: org.hibernate.dialect.H2Dialect
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${OAUTH2_ISSUER_URI:http://localhost:8080/realms/thesss-platform} # Replace with your Keycloak/Auth Server URI
+          jwk-set-uri: ${OAUTH2_JWK_SET_URI:http://localhost:8080/realms/thesss-platform/protocol/openid-connect/certs}
+
+camunda:
+  bpm:
+    history-level: full # Recommended for audit and monitoring
+    database:
+      schema-update: true # 'true' for auto-schema creation/update, 'false' for production with manual DDL
+      type: h2
+    job-execution:
+      enabled: true
+      deployment-aware: true
+    auto-deployment-enabled: true
+    deployment-resource-pattern: classpath*:/bpmn/**/*.bpmn # Auto-deploy BPMN files
+    # webapp:
+    #  enabled: true # Enable Camunda Webapps (Cockpit, Tasklist, Admin)
+
+# Feign Client Configurations
+# Placeholder URLs for external services - configure these in your environment-specific profiles or config server
+service:
+  urls:
+    farmer-service: ${FARMER_SERVICE_URL:http://localhost:8081/api/v1/farmers}
+    land-service: ${LAND_SERVICE_URL:http://localhost:8083/api/v1/lands}
+    notification-service: ${NOTIFICATION_SERVICE_URL:http://localhost:8084/api/v1/notifications}
+    identity-access-service: ${IDENTITY_ACCESS_SERVICE_URL:http://localhost:8085/api/v1/identity}
+
+feign:
+  client:
+    config:
+      default:
+        connectTimeout: 5000 # 5 seconds
+        readTimeout: 10000  # 10 seconds
+  # Hystrix/Resilience4J can be enabled here if needed
+  # hystrix:
+  #   enabled: false
+
+# Logging configuration
+logging:
+  level:
+    root: INFO
+    com.thesss.platform.workflows: DEBUG
+    org.camunda.bpm.engine.jobexecutor: INFO # Can be set to DEBUG for more details on job execution
+
+# Actuator endpoints
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+# --- Spring Profiles ---
+---
+spring:
+  config:
+    activate:
+      on-profile: dev
+  # Development specific configurations
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+---
+spring:
+  config:
+    activate:
+      on-profile: prod
+  # Production specific configurations
+  camunda:
+    bpm:
+      database:
+        schema-update: false # In prod, schema changes should be manual
+      # webapp:
+      #  enabled: false # Consider security implications of exposing webapps in prod
+  datasource: # Example for PostgreSQL in production
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:camunda_prod}
+    username: ${DB_USER:camunda_user}
+    password: ${DB_PASSWORD:camunda_password}
+    driverClassName: org.postgresql.Driver
+  jpa:
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+
+```

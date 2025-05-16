@@ -1,0 +1,84 @@
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:camunda="http://camunda.org/schema/1.0/bpmn" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="Definitions_CriticalData" targetNamespace="http://bpmn.io/schema/bpmn" exporter="Camunda Modeler" exporterVersion="5.20.0">
+  <bpmn:process id="criticalDataModificationApprovalProcess" name="Critical Data Modification Approval Process" isExecutable="true">
+    <bpmn:documentation>Provides a generic, parameterizable workflow template for approving modifications to various critical data entities.</bpmn:documentation>
+    <bpmn:startEvent id="StartEvent_CriticalDataApproval" name="Critical Data Change Submitted">
+      <bpmn:outgoing>Flow_To_AssignCriticalDataApprover</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="UserTask_AssignCriticalDataApprover" name="Assign Critical Data Approver" camunda:candidateGroups="criticalDataApprovers">
+      <bpmn:documentation>Approver assignment based on entityType in approvalRequestData or generic group. This task can be enhanced with specific routing logic by a listener or a preceding service task.</bpmn:documentation>
+      <bpmn:extensionElements>
+          <camunda:taskListener event="create" delegateExpression="${assignApproverDelegate}" />
+          <!-- The assignApproverDelegate should be able to determine candidate users/groups based on process variables like approvalRequestData.entityType -->
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_To_AssignCriticalDataApprover</bpmn:incoming>
+      <bpmn:outgoing>Flow_To_CriticalDataApproverReview</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:userTask id="UserTask_CriticalDataApproverReview" name="Review Critical Data Change">
+      <bpmn:documentation>Approver reviews the critical data change details and makes a decision.</bpmn:documentation>
+      <bpmn:incoming>Flow_To_CriticalDataApproverReview</bpmn:incoming>
+      <bpmn:outgoing>Flow_To_CriticalDataDecisionGateway</bpmn:outgoing>
+      <bpmn:extensionElements>
+        <camunda:formData>
+          <camunda:formField id="isApproved" label="Approve Change?" type="boolean" />
+          <camunda:formField id="approvalComments" label="Approval Comments" type="string" />
+        </camunda:formData>
+        <camunda:taskListener event="complete" delegateExpression="${setApprovalOutcomeDelegate}" />
+      </bpmn:extensionElements>
+    </bpmn:userTask>
+    <bpmn:exclusiveGateway id="Gateway_CriticalDataDecision" name="Approved?">
+      <bpmn:incoming>Flow_To_CriticalDataDecisionGateway</bpmn:incoming>
+      <bpmn:outgoing>Flow_To_UpdateEntityApproved</bpmn:outgoing>
+      <bpmn:outgoing>Flow_To_HandleRejection</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="ServiceTask_UpdateEntityApproved" name="Update Entity" camunda:delegateExpression="${applyCriticalDataModificationDelegate}">
+      <bpmn:documentation>Dynamically calls the appropriate service to update the entity based on entityType in approvalRequestData.</bpmn:documentation>
+      <bpmn:incoming>Flow_To_UpdateEntityApproved</bpmn:incoming>
+      <bpmn:outgoing>Flow_To_LogCriticalDataHistoryApproved</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="ServiceTask_LogCriticalDataHistoryApproved" name="Log Approval History" camunda:delegateExpression="${logCriticalDataApprovalHistoryDelegate}">
+      <bpmn:documentation>Dynamically logs approval history based on entityType.</bpmn:documentation>
+      <bpmn:incoming>Flow_To_LogCriticalDataHistoryApproved</bpmn:incoming>
+      <bpmn:outgoing>Flow_To_NotifyCriticalDataSubmitterApproved</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="ServiceTask_NotifyCriticalDataSubmitterApproved" name="Notify Submitter of Approval" camunda:delegateExpression="${sendWorkflowStatusUpdateNotificationDelegate}">
+      <bpmn:incoming>Flow_To_NotifyCriticalDataSubmitterApproved</bpmn:incoming>
+      <bpmn:outgoing>Flow_To_EndCriticalDataApproved</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="EndEvent_CriticalDataApproved" name="Critical Data Change Approved">
+      <bpmn:incoming>Flow_To_EndCriticalDataApproved</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:serviceTask id="ServiceTask_HandleRejection" name="Handle Rejection" camunda:delegateExpression="${logCriticalDataApprovalHistoryDelegate}">
+      <bpmn:documentation>Logs rejection history. Further actions like specific entity status update for rejection might be part of this delegate or a separate one if needed.</bpmn:documentation>
+      <bpmn:incoming>Flow_To_HandleRejection</bpmn:incoming>
+      <bpmn:outgoing>Flow_To_NotifyCriticalDataSubmitterRejected</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="ServiceTask_NotifyCriticalDataSubmitterRejected" name="Notify Submitter of Rejection" camunda:delegateExpression="${sendWorkflowStatusUpdateNotificationDelegate}">
+      <bpmn:incoming>Flow_To_NotifyCriticalDataSubmitterRejected</bpmn:incoming>
+      <bpmn:outgoing>Flow_To_EndCriticalDataRejected</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="EndEvent_CriticalDataRejected" name="Critical Data Change Rejected">
+      <bpmn:incoming>Flow_To_EndCriticalDataRejected</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_To_AssignCriticalDataApprover" sourceRef="StartEvent_CriticalDataApproval" targetRef="UserTask_AssignCriticalDataApprover" />
+    <bpmn:sequenceFlow id="Flow_To_CriticalDataApproverReview" sourceRef="UserTask_AssignCriticalDataApprover" targetRef="UserTask_CriticalDataApproverReview" />
+    <bpmn:sequenceFlow id="Flow_To_CriticalDataDecisionGateway" sourceRef="UserTask_CriticalDataApproverReview" targetRef="Gateway_CriticalDataDecision" />
+    <bpmn:sequenceFlow id="Flow_To_UpdateEntityApproved" name="Yes" sourceRef="Gateway_CriticalDataDecision" targetRef="ServiceTask_UpdateEntityApproved">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${isApproved == true}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_To_LogCriticalDataHistoryApproved" sourceRef="ServiceTask_UpdateEntityApproved" targetRef="ServiceTask_LogCriticalDataHistoryApproved" />
+    <bpmn:sequenceFlow id="Flow_To_NotifyCriticalDataSubmitterApproved" sourceRef="ServiceTask_LogCriticalDataHistoryApproved" targetRef="ServiceTask_NotifyCriticalDataSubmitterApproved" />
+    <bpmn:sequenceFlow id="Flow_To_EndCriticalDataApproved" sourceRef="ServiceTask_NotifyCriticalDataSubmitterApproved" targetRef="EndEvent_CriticalDataApproved" />
+    <bpmn:sequenceFlow id="Flow_To_HandleRejection" name="No" sourceRef="Gateway_CriticalDataDecision" targetRef="ServiceTask_HandleRejection">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${isApproved == false}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_To_NotifyCriticalDataSubmitterRejected" sourceRef="ServiceTask_HandleRejection" targetRef="ServiceTask_NotifyCriticalDataSubmitterRejected" />
+    <bpmn:sequenceFlow id="Flow_To_EndCriticalDataRejected" sourceRef="ServiceTask_NotifyCriticalDataSubmitterRejected" targetRef="EndEvent_CriticalDataRejected" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_CriticalData">
+    <bpmndi:BPMNPlane id="BPMNPlane_CriticalData" bpmnElement="criticalDataModificationApprovalProcess">
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>
+```
