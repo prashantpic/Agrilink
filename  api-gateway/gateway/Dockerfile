@@ -1,20 +1,37 @@
-# Use an official Java 21 runtime as a parent image
-FROM eclipse-temurin:21-jdk-alpine
+# Use an official OpenJDK runtime as a parent image
+FROM eclipse-temurin:21-jdk-jammy
 
 # Set the working directory in the container
 WORKDIR /app
 
-# Arguments for JAR file and port
-ARG JAR_FILE=target/api-gateway-1.0.0-SNAPSHOT.jar
-ARG APP_PORT=8080
+# Arguments for user and group
+ARG APP_USER=appuser
+ARG APP_GROUP=appgroup
+ARG APP_UID=1001
+ARG APP_GID=1001
 
-# Copy the executable JAR from the build stage to the current directory in the container
-COPY ${JAR_FILE} app.jar
+# Create a non-root user and group
+RUN groupadd -g ${APP_GID} ${APP_GROUP} && \
+    useradd -u ${APP_UID} -g ${APP_GROUP} -m -s /bin/bash ${APP_USER}
 
-# Expose the port the application runs on
-EXPOSE ${APP_PORT}
+# Copy the fat JAR file into the container
+# The JAR file is expected to be in target/ after a 'mvn package'
+# Using a wildcard to match the versioned JAR file
+COPY target/api-gateway-*.jar api-gateway.jar
 
-# Command to run the application
-# Add any JVM options here if needed, e.g., -Xmx512m -Xms256m
-# Spring profiles can be activated using -Dspring.profiles.active=docker
-ENTRYPOINT ["java", "-jar", "app.jar"]
+# Make port 8080 available to the world outside this container
+# This should match the server.port in application.yml
+EXPOSE 8080
+
+# Change ownership to the non-root user
+RUN chown ${APP_USER}:${APP_GROUP} api-gateway.jar
+
+# Switch to the non-root user
+USER ${APP_USER}
+
+# Define environment variables (can be overridden at runtime)
+ENV JAVA_OPTS="-Xms256m -Xmx512m"
+ENV SPRING_PROFILES_ACTIVE="docker"
+
+# Run the JAR file
+ENTRYPOINT ["java", "-Djava.security.egd=file:/dev/./urandom", "-jar", "/app/api-gateway.jar"]
