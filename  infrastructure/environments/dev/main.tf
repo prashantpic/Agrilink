@@ -3,303 +3,250 @@
 # LogicDescription: Calls shared infrastructure modules (e.g., VPC, EKS, RDS, S3, Secrets Manager, Prometheus Stack, SNS Topics, AWS Backup, GuardDuty)
 # providing 'dev' specific configurations. Values are sourced from dev-specific .tfvars files and securely injected secrets.
 # Implements resource provisioning according to dev environment needs, often with smaller instance sizes and fewer replicas.
+# ImplementedFeatures: Dev VPC Setup, Dev EKS Cluster, Dev RDS Instances, Dev Monitoring & Alerting Setup, Dev Secrets Management Integration, Dev Backup Configuration
+# RequirementIds: REQ-8-011, REQ-17-005, REQ-17-006, REQ-17-007, REQ-17-008, REQ-17-009
 
-# Provider configuration is assumed to be in the root or handled by the calling configuration.
-# This file focuses on module instantiation for the 'dev' environment.
+# Global/Shared Variables (assumed from root or injected)
+variable "aws_region" {}
+variable "project_name" {}
+variable "organization_name" {}
+variable "default_tags" {
+  type    = map(string)
+  default = {}
+}
 
-# --- Core Networking ---
+# Environment specific variables
+variable "environment_name" {
+  description = "Name of the environment (e.g., dev, staging, prod)"
+  type        = string
+  default     = "dev"
+}
+
+locals {
+  env_tags = merge(
+    var.default_tags,
+    {
+      "Environment" = var.environment_name,
+      "Project"     = var.project_name
+    }
+  )
+  resource_prefix = "${var.project_name}-${var.environment_name}"
+}
+
+# --- Networking ---
 module "vpc" {
   source = "../../modules/networking/vpc"
 
-  vpc_cidr_block      = var.vpc_cidr_block
+  vpc_cidr_block      = var.vpc_cidr
   public_subnet_cidrs = var.public_subnet_cidrs
   private_subnet_cidrs = var.private_subnet_cidrs
-  availability_zones  = var.availability_zones
-  enable_nat_gateway  = var.enable_nat_gateway
-  single_nat_gateway  = var.single_nat_gateway
-  project_name        = var.project_name
-  environment         = var.environment_name
-  common_tags         = local.common_tags
+  availability_zones  = slice(data.aws_availability_zones.available.names, 0, 2) # Dev might use 2 AZs
+  enable_nat_gateway  = true
+  single_nat_gateway  = true # Cost saving for dev
+
+  tags = local.env_tags
 }
 
-# --- EKS Cluster ---
-module "eks_cluster" {
-  source = "../../modules/kubernetes/eks_cluster"
+# --- Secrets Management (REQ-8-011) ---
+module "secrets_manager" {
+  source = "../../modules/security/secrets_manager"
 
-  cluster_name                  = "${var.project_name}-${var.environment_name}-eks"
-  cluster_version               = var.eks_cluster_version
-  vpc_id                        = module.vpc.vpc_id
-  private_subnet_ids            = module.vpc.private_subnet_ids
-  control_plane_subnet_ids      = module.vpc.private_subnet_ids # Typically private for control plane communication
-  node_group_instance_types     = var.eks_node_group_instance_types
-  node_group_desired_size       = var.eks_node_group_desired_size
-  node_group_min_size           = var.eks_node_group_min_size
-  node_group_max_size           = var.eks_node_group_max_size
-  project_name                  = var.project_name
-  environment                   = var.environment_name
-  aws_region                    = var.aws_region
-  common_tags                   = local.common_tags
-  enable_external_secrets       = true # REQ-8-011
-  external_secrets_iam_role_name = "${var.project_name}-${var.environment_name}-eso-role"
-  enable_prometheus_stack_dependency_config = true # For APM/Alerting REQ-17-005, REQ-17-006
-  # APM related configurations can be passed here if the module supports it
+  secrets_to_create = {
+    rds_master_password = {
+      description             = "Master password for RDS instance in ${var.environment_name}"
+      recovery_window_in_days = 0 # No recovery for dev, or set to a low value
+      generate_random_password = {
+        length           = 16
+        special_characters = true
+      }
+    }
+    # Add other secrets as needed for dev
+  }
+  common_tags = local.env_tags
 }
 
 # --- Database (RDS Aurora PostgreSQL) ---
 module "rds_aurora_postgresql" {
   source = "../../modules/database/rds_aurora"
 
-  cluster_identifier      = "${var.project_name}-${var.environment_name}-aurora-pg"
+  cluster_identifier      = "${local.resource_prefix}-aurora-pg"
   engine                  = "aurora-postgresql"
   engine_version          = var.rds_engine_version
-  instance_class          = var.rds_instance_class
-  instances_count         = var.rds_instances_count # Typically 1 for dev, 2+ for staging/prod
+  instance_class          = var.rds_instance_class # Dev specific instance class
+  instances_count         = 1 # Single instance for dev
+  publicly_accessible     = false
   vpc_id                  = module.vpc.vpc_id
-  db_subnet_group_name    = module.vpc.database_subnet_group_name # Assuming VPC module creates this or provides subnets
-  vpc_security_group_ids  = [module.vpc.default_security_group_id] # Example, ideally a dedicated SG
-  db_name                 = var.rds_db_name
-  master_username         = var.rds_master_username
-  # Master password should be sourced from a secure secrets management, e.g. var.rds_master_password injected via CI/CD
-  master_password         = var.rds_master_password
-  backup_retention_period = var.rds_backup_retention_period
-  skip_final_snapshot     = true # For dev
-  project_name            = var.project_name
-  environment             = var.environment_name
-  common_tags             = local.common_tags
-  # Enable monitoring alerts REQ-17-007
-  enable_monitoring_alerts = true
-  alarm_sns_topic_arn      = module.sns_topics.alert_topics["critical_alerts_topic"].arn
+  subnet_ids              = module.vpc.private_subnet_ids
+  db_name                 = "${var.project_name}_dev_db"
+  master_username         = "adminuser"
+  master_password_secret_arn = module.secrets_manager.secrets["rds_master_password"].arn
+  backup_retention_period = 7    # Shorter retention for dev
+  skip_final_snapshot     = true # For dev, skip final snapshot
+  storage_encrypted       = true
+  deletion_protection     = false # Dev can be easily deleted
+
+  # Monitoring & Alerting for RDS (REQ-17-007)
+  enable_cloudwatch_alarms = true
+  alarm_sns_topic_arn      = module.sns_topics.topic_arns["critical_alerts"] # Example topic
+
+  tags = local.env_tags
 }
 
-# --- Secrets Management (AWS Secrets Manager for App Secrets) ---
-# REQ-8-011
-module "application_secrets" {
-  source = "../../modules/security/secrets_manager"
+# --- Kubernetes (EKS) ---
+module "eks_cluster" {
+  source = "../../modules/kubernetes/eks_cluster"
 
-  secrets_config = {
-    # Example: Create a secret for RDS master password if not directly set,
-    # or for other application secrets.
-    # "rds_master_credentials" = {
-    #   description             = "RDS master credentials for dev environment"
-    #   recovery_window_in_days = 7
-    #   secret_string           = jsonencode({ username = var.rds_master_username, password = var.rds_master_password }) # If password is provided
-    #   # OR use random password generation if var.rds_master_password is not provided
-    #   # generate_random_password = { length = 16, special = true }
-    #   tags                    = local.common_tags
-    # },
-    "myapplication/dev/api_key" = {
-      description             = "API Key for My Application in Dev"
-      recovery_window_in_days = 0 # No recovery for dev if desired
-      secret_string           = "dev-dummy-api-key-to-be-replaced" # Placeholder
-      tags                    = local.common_tags
+  cluster_name    = "${local.resource_prefix}-eks"
+  cluster_version = var.eks_cluster_version
+  vpc_id          = module.vpc.vpc_id
+  subnet_ids      = module.vpc.private_subnet_ids # EKS control plane in private subnets
+
+  managed_node_groups = {
+    general_purpose = {
+      instance_types = [var.eks_node_instance_type] # Dev specific instance type
+      min_size       = 1
+      max_size       = 2 # Scaled down for dev
+      desired_size   = 1
+      disk_size      = 20 # Smaller disk for dev
     }
   }
 
-  common_tags = local.common_tags
+  # Secrets integration (REQ-8-011)
+  enable_external_secrets_operator = true
+  external_secrets_iam_role_name   = "${local.resource_prefix}-eso-role"
+
+  # APM Configuration (REQ-17-005)
+  enable_apm_tooling = true
+  # apm_config specific variables...
+
+  # Cluster Alerting Configuration (REQ-17-006, REQ-17-007)
+  enable_cluster_alerting_components = true
+
+  tags = local.env_tags
+
+  # Depends on RDS master password secret being available if any EKS add-on needs it directly (unlikely for core EKS)
+  # depends_on = [module.secrets_manager]
 }
 
-# --- Monitoring & Alerting (Prometheus Stack on EKS) ---
-# REQ-17-005, REQ-17-006, REQ-17-007
+# --- Monitoring & Alerting (Prometheus Stack on EKS - REQ-17-005, REQ-17-006, REQ-17-007) ---
 module "prometheus_stack" {
   source = "../../modules/monitoring/prometheus_stack"
 
-  eks_cluster_name          = module.eks_cluster.cluster_name
-  eks_oidc_provider_arn     = module.eks_cluster.oidc_provider_arn
-  eks_cluster_endpoint      = module.eks_cluster.cluster_endpoint
-  eks_cluster_ca_certificate = module.eks_cluster.cluster_ca_certificate # For Helm provider
+  # Depends on EKS cluster being ready
+  depends_on = [module.eks_cluster]
 
-  namespace                 = "monitoring"
-  create_namespace          = true
-  grafana_admin_password    = var.grafana_admin_password # Should be a securely managed variable
-  alertmanager_config = {
-    global = {
-      resolve_timeout = "5m"
-    }
-    route = {
-      group_by        = ["job", "alertname", "severity"]
-      group_wait      = "30s"
-      group_interval  = "5m"
-      repeat_interval = "1h"
-      receiver        = "default-receiver"
-      routes = [
-        {
-          receiver = "critical-alerts-sns"
-          matchers = ["severity=\"critical\""]
-        },
-        {
-          receiver = "warning-alerts-sns"
-          matchers = ["severity=\"warning\""]
-        }
-      ]
-    }
-    receivers = [
-      {
-        name = "default-receiver"
-        # Add a default receiver if needed, e.g., null or a dev-specific channel
-      },
-      {
-        name = "critical-alerts-sns"
-        webhook_configs = [{
-          url = "http://alertmanager-sns-webhook.monitoring.svc.cluster.local:3000/sns?topic_arn=${module.sns_topics.alert_topics["critical_alerts_topic"].arn}" # Example internal URL for sns-webhook
-          send_resolved = true
-        }]
-      },
-      {
-        name = "warning-alerts-sns"
-        webhook_configs = [{
-          url = "http://alertmanager-sns-webhook.monitoring.svc.cluster.local:3000/sns?topic_arn=${module.sns_topics.alert_topics["warning_alerts_topic"].arn}" # Example
-          send_resolved = true
-        }]
-      }
-    ]
-  }
-  # Example alert rules definition (can be more complex and passed as a map/list of objects)
-  # REQ-17-007, REQ-17-008
-  prometheus_rules = [
-    {
-      name = "dev-cluster-rules"
-      groups = [
-        {
-          name = "kubernetes-apps"
-          rules = [
-            {
-              alert = "KubePodCrashLooping"
-              expr  = "kube_pod_container_status_restarts_total > 5"
-              for   = "15m"
-              labels = {
-                severity = "warning"
-              }
-              annotations = {
-                summary     = "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash looping."
-                description = "{{ $labels.pod }} in {{ $labels.namespace }} has restarted {{ $value }} times in the last 15 minutes."
-              }
-            }
-          ]
-        }
-      ]
-    }
-  ]
-  common_tags = local.common_tags
+  eks_cluster_name         = module.eks_cluster.cluster_name
+  eks_oidc_provider_arn    = module.eks_cluster.oidc_provider_arn
+  eks_cluster_endpoint     = module.eks_cluster.cluster_endpoint
+  eks_cluster_ca_certificate = module.eks_cluster.cluster_certificate_authority_data
+
+  namespace                = "monitoring"
+  grafana_admin_password_secret_name = "grafana-admin-password-${var.environment_name}" # Store in Secrets Manager
+  grafana_pvc_storage_class = "gp2" # Example, ensure storage class exists or use dynamic
+  grafana_pvc_size          = "1Gi" # Small for dev
+
+  prometheus_pvc_storage_class = "gp2"
+  prometheus_pvc_size          = "2Gi" # Small for dev
+
+  alertmanager_config_secret_name = "alertmanager-config-${var.environment_name}" # Store in SM or pass directly
+  # alertmanager_config should route to SNS topics from module.sns_topics
+
+  alert_rules_enabled = true
+  # common_alert_rules specific variables could be passed here
+
+  tags = local.env_tags
 }
 
-# --- SNS Topics for Alerting ---
-# REQ-17-006, REQ-17-009
+# --- Alerting SNS Topics (REQ-17-009) ---
 module "sns_topics" {
   source = "../../modules/alerting/sns_topics"
 
-  topic_names_with_config = {
-    "critical_alerts_topic" = {
-      display_name = "${var.project_name}-${var.environment_name}-critical-alerts"
-      subscriptions = [
-        { protocol = "email", endpoint = var.critical_alerts_email }
-      ]
-    },
-    "warning_alerts_topic" = {
-      display_name = "${var.project_name}-${var.environment_name}-warning-alerts"
-      subscriptions = [
-        { protocol = "email", endpoint = var.warning_alerts_email }
-      ]
-    },
-    "backup_failure_alerts_topic" = { # REQ-17-008
-      display_name = "${var.project_name}-${var.environment_name}-backup-failures"
-      subscriptions = [
-        { protocol = "email", endpoint = var.backup_alerts_email }
-      ]
-    },
-    "security_alerts_topic" = { # REQ-17-008 (for GuardDuty)
-      display_name = "${var.project_name}-${var.environment_name}-security-alerts"
-      subscriptions = [
-        { protocol = "email", endpoint = var.security_alerts_email }
-      ]
-    }
+  topic_names_with_subscriptions = {
+    "critical_alerts" = [{ protocol = "email", endpoint = "dev-alerts-critical@example.com" }],
+    "warning_alerts"  = [{ protocol = "email", endpoint = "dev-alerts-warning@example.com" }],
+    "security_alerts" = [{ protocol = "email", endpoint = "dev-security-alerts@example.com" }], # REQ-17-008
+    "backup_alerts"   = [{ protocol = "email", endpoint = "dev-backup-alerts@example.com" }]      # REQ-17-008
   }
-  common_tags = local.common_tags
+  allowed_publishers = [
+    "cloudwatch.amazonaws.com",
+    "events.amazonaws.com",
+    # Add other service principals if needed
+  ]
+  tags = local.env_tags
 }
 
-# --- AWS Backup ---
-# REQ-17-008 (for backup failure alerts)
+# --- Backup (AWS Backup - REQ-17-008 for failure alerts) ---
 module "aws_backup" {
   source = "../../modules/backup_restore/aws_backup"
 
-  vault_name          = "${var.project_name}-${var.environment_name}-backup-vault"
-  backup_plan_name    = "${var.project_name}-${var.environment_name}-daily-backup-plan"
-  iam_role_arn        = var.aws_backup_iam_role_arn # Must be created with appropriate permissions
-  schedule_expression = "cron(0 5 ? * * *)"        # Daily at 5 AM UTC
-  resource_assignments = {
-    "rds_databases" = {
-      resource_type_conditions = ["RDS"] # Backup all RDS instances
-      # Can be more specific using tags or ARNs
-      # selection_tags = [{ type = "STRINGEQUALS", key = "backup", value = "daily" }]
-    }
+  backup_vault_name = "${local.resource_prefix}-backup-vault"
+  backup_plan_name  = "${local.resource_prefix}-daily-backup-plan"
+  backup_schedule   = "cron(0 5 * * ? *)" # Daily at 5 AM UTC
+  backup_tags_selection = {
+    "dev-backup" = "true" # Tag resources with 'dev-backup: true'
   }
-  # Enable alerting for backup failures
-  enable_alerting     = true
-  failure_sns_topic_arn = module.sns_topics.alert_topics["backup_failure_alerts_topic"].arn
-  common_tags         = local.common_tags
+  backup_resources_selection = [
+    # module.rds_aurora_postgresql.cluster_arn # Example direct resource ARN
+  ]
+  cold_storage_after_days = 0 # No cold storage for dev, or very short
+  delete_after_days       = 30 # Shorter retention for dev backups
+
+  # Alerting for backup failures (REQ-17-008)
+  enable_backup_alerts = true
+  backup_alerts_sns_topic_arn = module.sns_topics.topic_arns["backup_alerts"]
+
+  tags = local.env_tags
 }
 
-# --- Security (AWS GuardDuty) ---
-# REQ-17-008 (for security alerts)
+# --- Security (GuardDuty - REQ-17-008 for findings) ---
 module "guardduty" {
   source = "../../modules/security/guardduty"
 
-  enable_guardduty         = true
-  finding_publishing_frequency = "FIFTEEN_MINUTES" # For dev, could be longer for prod
-  export_findings_to_s3    = false # Optional for dev
-  # s3_bucket_name        = (if export_findings_to_s3 is true)
+  enable_guardduty               = true
+  publish_findings_to_s3       = false # Optional for dev
+  # s3_bucket_for_findings_arn = module.s3_guardduty_findings.bucket_arn # If s3 publishing enabled
+  enable_eventbridge_alerts    = true
+  findings_sns_topic_arn       = module.sns_topics.topic_arns["security_alerts"]
+  guardduty_finding_severities = ["MEDIUM", "HIGH"] # Monitor medium and high for dev
 
-  # Enable alerting for GuardDuty findings
-  enable_alerting          = true
-  alert_sns_topic_arn      = module.sns_topics.alert_topics["security_alerts_topic"].arn
-  # GuardDuty findings severity for alerts (e.g., HIGH, MEDIUM)
-  alert_severity_threshold_gte = 7 # Corresponds to High severity
-  common_tags              = local.common_tags
+  tags = local.env_tags
 }
 
-# --- Common Local Variables ---
-locals {
-  common_tags = merge(
-    var.default_tags,
-    {
-      "Environment" = var.environment_name,
-      "Project"     = var.project_name
-      # Add other common tags here
-    }
-  )
+# --- AWS Config Rules (Example) ---
+module "s3_public_access_blocked_rule" {
+  source = "../../policies/aws_config_rules/ensure_s3_public_access_blocked"
+
+  rule_name = "${local.resource_prefix}-s3-public-access-blocked"
+  # Other params if needed
 }
 
-# --- Outputs from the Dev Environment ---
-output "vpc_id" {
-  description = "The ID of the VPC."
+# --- Data Sources ---
+data "aws_availability_zones" "available" {}
+
+# --- Outputs (example) ---
+output "dev_vpc_id" {
+  description = "ID of the development VPC"
   value       = module.vpc.vpc_id
 }
 
-output "eks_cluster_name" {
-  description = "The name of the EKS cluster."
+output "dev_eks_cluster_name" {
+  description = "Name of the development EKS cluster"
   value       = module.eks_cluster.cluster_name
 }
 
-output "eks_cluster_endpoint" {
-  description = "The endpoint for the EKS cluster's API server."
+output "dev_eks_cluster_endpoint" {
+  description = "Endpoint for the development EKS cluster"
   value       = module.eks_cluster.cluster_endpoint
+  sensitive   = true
 }
 
-output "rds_aurora_cluster_endpoint" {
-  description = "The endpoint of the RDS Aurora cluster."
+output "dev_rds_cluster_endpoint" {
+  description = "Endpoint for the development RDS Aurora cluster"
   value       = module.rds_aurora_postgresql.cluster_endpoint
+  sensitive   = true
 }
 
-output "rds_aurora_cluster_reader_endpoint" {
-  description = "The reader endpoint of the RDS Aurora cluster."
-  value       = module.rds_aurora_postgresql.cluster_reader_endpoint
-}
-
-output "critical_alerts_sns_topic_arn" {
-  description = "ARN of the SNS topic for critical alerts."
-  value       = module.sns_topics.alert_topics["critical_alerts_topic"].arn
-}
-
-output "application_secrets_arns" {
-  description = "ARNs of the application secrets created in Secrets Manager."
-  value       = module.application_secrets.secret_arns
+output "dev_critical_alerts_sns_topic_arn" {
+  description = "ARN of the critical alerts SNS topic for dev"
+  value       = module.sns_topics.topic_arns["critical_alerts"]
 }

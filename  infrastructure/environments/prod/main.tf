@@ -1,195 +1,264 @@
 # environments/prod/main.tf
 # Purpose: Define and orchestrate all infrastructure resources for the production environment.
 # LogicDescription: Calls shared infrastructure modules with production-grade configurations
-# focusing on high availability, scalability, security, and performance.
-# Uses production-specific .tfvars and secrets. All monitoring and alerting are configured for production SLAs.
+# focusing on high availability, scalability, security, and performance. Uses production-specific .tfvars and secrets.
+# All monitoring and alerting are configured for production SLAs.
+# ImplementedFeatures: Prod VPC Setup, Prod EKS Cluster (HA), Prod RDS Instances (HA, Read Replicas), Prod Monitoring & Alerting Setup (Critical SLAs)
+# RequirementIds: REQ-8-011, REQ-17-005, REQ-17-006, REQ-17-007, REQ-17-008, REQ-17-009
 
-# --- Core Networking ---
+# Global/Shared Variables (assumed from root or injected)
+variable "aws_region" {}
+variable "project_name" {}
+variable "organization_name" {}
+variable "default_tags" {
+  type    = map(string)
+  default = {}
+}
+
+# Environment specific variables (defined in environments/prod/variables.tf)
+variable "vpc_cidr" {}
+variable "public_subnet_cidrs" {}
+variable "private_subnet_cidrs" {}
+variable "eks_cluster_version" {}
+variable "eks_node_instance_type" {}
+variable "eks_node_min_size" {}
+variable "eks_node_max_size" {}
+variable "eks_node_desired_size" {}
+variable "rds_engine_version" {}
+variable "rds_instance_class" {}
+variable "rds_instances_count" {}
+variable "rds_backup_retention_period" {}
+variable "rds_deletion_protection" {}
+
+variable "environment_name" {
+  description = "Name of the environment"
+  type        = string
+  default     = "prod"
+}
+
+locals {
+  env_tags = merge(
+    var.default_tags,
+    {
+      "Environment" = var.environment_name,
+      "Project"     = var.project_name
+    }
+  )
+  resource_prefix = "${var.project_name}-${var.environment_name}"
+}
+
+# --- Networking ---
 module "vpc" {
   source = "../../modules/networking/vpc"
 
-  vpc_cidr_block      = var.vpc_cidr_block       # Prod specific value from prod/variables.tf
-  public_subnet_cidrs = var.public_subnet_cidrs  # Prod specific value (e.g., across 3 AZs)
-  private_subnet_cidrs = var.private_subnet_cidrs # Prod specific value (e.g., across 3 AZs)
-  availability_zones  = var.availability_zones   # Prod specific or default (e.g., 3 AZs)
-  enable_nat_gateway  = var.enable_nat_gateway   # Prod specific (true)
-  single_nat_gateway  = false                    # Prod: Use multiple NAT Gateways for HA
-  project_name        = var.project_name
-  environment         = var.environment_name
-  common_tags         = local.common_tags
+  vpc_cidr_block      = var.vpc_cidr
+  public_subnet_cidrs = var.public_subnet_cidrs
+  private_subnet_cidrs = var.private_subnet_cidrs
+  availability_zones  = slice(data.aws_availability_zones.available.names, 0, 3) # Prod should use at least 3 AZs for HA
+  enable_nat_gateway  = true
+  single_nat_gateway  = false # Redundant NAT Gateways for HA in prod
+
+  tags = local.env_tags
 }
 
-# --- EKS Cluster (HA) ---
-module "eks_cluster" {
-  source = "../../modules/kubernetes/eks_cluster"
+# --- Secrets Management (REQ-8-011) ---
+module "secrets_manager" {
+  source = "../../modules/security/secrets_manager"
 
-  cluster_name                  = "${var.project_name}-${var.environment_name}-eks"
-  cluster_version               = var.eks_cluster_version           # Prod specific
-  vpc_id                        = module.vpc.vpc_id
-  private_subnet_ids            = module.vpc.private_subnet_ids
-  control_plane_subnet_ids      = module.vpc.private_subnet_ids     # Ensure these are spread across AZs
-  node_group_instance_types     = var.eks_node_group_instance_types # Prod specific (e.g., m5.xlarge or compute optimized)
-  node_group_desired_size       = var.eks_node_group_desired_size   # Prod specific (e.g., 3-5 minimum)
-  node_group_min_size           = var.eks_node_group_min_size
-  node_group_max_size           = var.eks_node_group_max_size
-  # Add specific HA configurations if module supports (e.g. multi-AZ node groups by default)
-  project_name                  = var.project_name
-  environment                   = var.environment_name
-  aws_region                    = var.aws_region
-  common_tags                   = local.common_tags
-  enable_external_secrets       = true # REQ-8-011
-  external_secrets_iam_role_name = "${var.project_name}-${var.environment_name}-eso-role"
-  enable_prometheus_stack_dependency_config = true # For APM/Alerting REQ-17-005, REQ-17-006
+  secrets_to_create = {
+    rds_master_password = {
+      description             = "Master password for RDS instance in ${var.environment_name}"
+      recovery_window_in_days = 30 # Standard recovery for prod
+      enable_rotation         = true # Enable rotation for RDS password in prod
+      rotation_lambda_arn     = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:SecretsManagerRDSMariaDBRotationSingleUser" # Example, adjust for PostgreSQL
+      rotation_rules = {
+        schedule_expression = "cron(0 4 */7 * ? *)" # Rotate every 7 days
+      }
+      generate_random_password = {
+        length           = 20 # Stronger password for prod
+        special_characters = true
+      }
+    }
+    # Add other critical secrets for prod, consider rotation for them as well
+  }
+  common_tags = local.env_tags
 }
 
 # --- Database (RDS Aurora PostgreSQL - HA, Read Replicas) ---
 module "rds_aurora_postgresql" {
   source = "../../modules/database/rds_aurora"
 
-  cluster_identifier      = "${var.project_name}-${var.environment_name}-aurora-pg"
+  cluster_identifier      = "${local.resource_prefix}-aurora-pg"
   engine                  = "aurora-postgresql"
-  engine_version          = var.rds_engine_version            # Prod specific
-  instance_class          = var.rds_instance_class            # Prod specific (e.g., db.r6g.xlarge)
-  instances_count         = var.rds_instances_count           # Prod specific (e.g., 2-3 for HA and read replicas)
-  multi_az                = true                              # Ensured by Aurora, instance placement across AZs
+  engine_version          = var.rds_engine_version
+  instance_class          = var.rds_instance_class # Production grade instance class
+  instances_count         = var.rds_instances_count # e.g., 2 or 3 for HA in prod
+  # enable_read_replica   = true # If module supports separate read replica configuration
+  # read_replica_count    = 1 # Example
+  publicly_accessible     = false
   vpc_id                  = module.vpc.vpc_id
-  db_subnet_group_name    = module.vpc.database_subnet_group_name
-  vpc_security_group_ids  = [module.vpc.default_security_group_id] # Dedicated SG highly recommended
-  db_name                 = var.rds_db_name                   # Prod specific
-  master_username         = var.rds_master_username           # Prod specific
-  master_password         = var.rds_master_password           # Securely injected for prod
-  backup_retention_period = var.rds_backup_retention_period # Prod specific (e.g., 30-35 days)
-  skip_final_snapshot     = false                             # Critical to keep final snapshot for prod
-  deletion_protection     = true                              # Enable deletion protection for prod
-  project_name            = var.project_name
-  environment             = var.environment_name
-  common_tags             = local.common_tags
-  enable_monitoring_alerts = true # REQ-17-007 (Critical SLAs)
-  alarm_sns_topic_arn      = module.sns_topics.alert_topics["critical_alerts_topic"].arn
-  # Configure enhanced monitoring, performance insights for prod if module supports
+  subnet_ids              = module.vpc.private_subnet_ids
+  db_name                 = "${var.project_name}_prod_db"
+  master_username         = "adminuser"
+  master_password_secret_arn = module.secrets_manager.secrets["rds_master_password"].arn
+  backup_retention_period = var.rds_backup_retention_period # e.g., 35 days for prod
+  skip_final_snapshot     = false
+  storage_encrypted       = true
+  deletion_protection     = var.rds_deletion_protection # Should be true for prod
+
+  # Monitoring & Alerting for RDS (REQ-17-007) - Critical SLAs
+  enable_cloudwatch_alarms = true
+  alarm_sns_topic_arn      = module.sns_topics.topic_arns["critical_alerts_prod_high_sev"]
+  # Additional alarms for prod if needed
+
+  tags = local.env_tags
 }
 
-# --- Secrets Management (AWS Secrets Manager for App Secrets) ---
-# REQ-8-011
-module "application_secrets" {
-  source = "../../modules/security/secrets_manager"
+# --- Kubernetes (EKS - HA) ---
+module "eks_cluster" {
+  source = "../../modules/kubernetes/eks_cluster"
 
-  secrets_config = {
-    "myapplication/prod/api_key" = {
-      description             = "API Key for My Application in Production"
-      recovery_window_in_days = 30 # Longer recovery for prod
-      # secret_string or generate_random_password logic
-      tags                    = local.common_tags
-    },
-    # Add other prod specific secrets with rotation if applicable
+  cluster_name    = "${local.resource_prefix}-eks"
+  cluster_version = var.eks_cluster_version
+  vpc_id          = module.vpc.vpc_id
+  subnet_ids      = module.vpc.private_subnet_ids # Ensure these span multiple AZs for HA
+
+  # EKS control plane logging - enable for prod
+  enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
+
+
+  managed_node_groups = {
+    critical_workloads_prod = {
+      instance_types = [var.eks_node_instance_type] # Production grade instance types
+      min_size       = var.eks_node_min_size # e.g., 3
+      max_size       = var.eks_node_max_size # e.g., 10
+      desired_size   = var.eks_node_desired_size # e.g., 3
+      disk_size      = 100
+      # Consider Spot instances for cost optimization on non-critical workloads if applicable
+    }
+    # Add more node groups as needed (e.g., for specific workloads with different instance types/requirements)
   }
-  common_tags = local.common_tags
+
+  # Secrets integration (REQ-8-011)
+  enable_external_secrets_operator = true
+  external_secrets_iam_role_name   = "${local.resource_prefix}-eso-role"
+
+  # APM Configuration (REQ-17-005)
+  enable_apm_tooling = true
+  # apm_config specific to production workloads
+
+  # Cluster Alerting Configuration (REQ-17-006, REQ-17-007)
+  enable_cluster_alerting_components = true
+
+  tags = local.env_tags
 }
 
-# --- Monitoring & Alerting (Prometheus Stack on EKS - Critical SLAs) ---
-# REQ-17-005, REQ-17-006, REQ-17-007
+# --- Monitoring & Alerting (Prometheus Stack on EKS - REQ-17-005, REQ-17-006, REQ-17-007) ---
 module "prometheus_stack" {
   source = "../../modules/monitoring/prometheus_stack"
+  depends_on = [module.eks_cluster]
 
-  eks_cluster_name          = module.eks_cluster.cluster_name
-  eks_oidc_provider_arn     = module.eks_cluster.oidc_provider_arn
-  eks_cluster_endpoint      = module.eks_cluster.cluster_endpoint
-  eks_cluster_ca_certificate = module.eks_cluster.cluster_ca_certificate
+  eks_cluster_name         = module.eks_cluster.cluster_name
+  eks_oidc_provider_arn    = module.eks_cluster.oidc_provider_arn
+  eks_cluster_endpoint     = module.eks_cluster.cluster_endpoint
+  eks_cluster_ca_certificate = module.eks_cluster.cluster_certificate_authority_data
 
-  namespace                 = "monitoring"
-  create_namespace          = true
-  grafana_admin_password    = var.grafana_admin_password # Securely injected for prod
-  # Production alertmanager config with robust routing and escalation
-  alertmanager_config       = var.prod_alertmanager_config # Defined in prod/variables.tf or tfvars
-  # Production prometheus rules with critical SLA focus
-  prometheus_rules          = var.prod_prometheus_rules    # Defined in prod/variables.tf or tfvars
-  # Consider persistent storage for Prometheus/Grafana in prod
-  # prometheus_storage_class = "gp3"
-  # grafana_storage_class    = "gp3"
-  common_tags               = local.common_tags
+  namespace                = "monitoring-prod" # Dedicated namespace for prod monitoring
+  grafana_admin_password_secret_name = "grafana-admin-password-${var.environment_name}" # Managed in AWS SM
+  grafana_pvc_storage_class = "gp3" # Use gp3 for better performance/cost options
+  grafana_pvc_size          = "20Gi" # Larger for prod
+
+  prometheus_pvc_storage_class = "gp3"
+  prometheus_pvc_size          = "100Gi" # Significantly larger for prod data retention
+
+  alertmanager_config_secret_name = "alertmanager-config-${var.environment_name}"
+  # Configure Alertmanager for prod SLAs, potentially with PagerDuty/OpsGenie integrations via SNS
+
+  alert_rules_enabled = true
+  # specific_alert_rules_prod could be passed here
+
+  tags = local.env_tags
 }
 
-# --- SNS Topics for Alerting ---
-# REQ-17-006, REQ-17-009
+# --- Alerting SNS Topics (REQ-17-009) ---
 module "sns_topics" {
   source = "../../modules/alerting/sns_topics"
 
-  topic_names_with_config = {
-    "critical_alerts_topic" = {
-      display_name = "${var.project_name}-${var.environment_name}-critical-alerts"
-      subscriptions = var.prod_critical_alerts_subscriptions # Prod specific (e.g., PagerDuty, OpsGenie, email)
-    },
-    "warning_alerts_topic" = {
-      display_name = "${var.project_name}-${var.environment_name}-warning-alerts"
-      subscriptions = var.prod_warning_alerts_subscriptions # Prod specific
-    },
-    "backup_failure_alerts_topic" = { # REQ-17-008
-      display_name = "${var.project_name}-${var.environment_name}-backup-failures"
-      subscriptions = var.prod_backup_alerts_subscriptions
-    },
-    "security_alerts_topic" = { # REQ-17-008
-      display_name = "${var.project_name}-${var.environment_name}-security-alerts"
-      subscriptions = var.prod_security_alerts_subscriptions
-    }
+  topic_names_with_subscriptions = {
+    "critical_alerts_prod_high_sev" = [
+      { protocol = "email", endpoint = "prod-alerts-critical-high@example.com" },
+      # { protocol = "sqs", endpoint = "arn:aws:sqs:..." } # For PagerDuty/OpsGenie integration
+    ],
+    "warning_alerts_prod"  = [{ protocol = "email", endpoint = "prod-alerts-warning@example.com" }],
+    "security_alerts_prod" = [{ protocol = "email", endpoint = "prod-security-alerts@example.com" }], # REQ-17-008
+    "backup_alerts_prod"   = [{ protocol = "email", endpoint = "prod-backup-alerts@example.com" }]    # REQ-17-008
   }
-  common_tags = local.common_tags
+  allowed_publishers = [
+    "cloudwatch.amazonaws.com",
+    "events.amazonaws.com",
+  ]
+  tags = local.env_tags
 }
 
-# --- AWS Backup ---
-# REQ-17-008
+# --- Backup (AWS Backup - REQ-17-008 for failure alerts) ---
 module "aws_backup" {
   source = "../../modules/backup_restore/aws_backup"
 
-  vault_name           = "${var.project_name}-${var.environment_name}-backup-vault"
-  # Consider cross-region replication for prod backup vault if module supports
-  backup_plan_name     = "${var.project_name}-${var.environment_name}-prod-backup-plan"
-  iam_role_arn         = var.aws_backup_iam_role_arn      # Prod specific role
-  schedule_expression  = "cron(0 3 ? * * *)"            # Daily at 3 AM UTC for prod
-  resource_assignments = var.prod_backup_resource_assignments # Comprehensive assignments for prod
-  enable_alerting      = true
-  failure_sns_topic_arn = module.sns_topics.alert_topics["backup_failure_alerts_topic"].arn
-  common_tags          = local.common_tags
+  backup_vault_name = "${local.resource_prefix}-backup-vault"
+  backup_plan_name  = "${local.resource_prefix}-critical-backup-plan"
+  backup_schedule   = "cron(0 3 * * ? *)" # Daily at 3 AM UTC for prod
+  backup_tags_selection = {
+    "prod-backup" = "true" # Tag critical prod resources
+  }
+  cold_storage_after_days = 180 # Example: move to cold storage after 6 months
+  delete_after_days       = 365 * 7 # Example: retain for 7 years for compliance
+
+  enable_backup_alerts = true
+  backup_alerts_sns_topic_arn = module.sns_topics.topic_arns["backup_alerts_prod"]
+
+  tags = local.env_tags
 }
 
-# --- Security (AWS GuardDuty) ---
-# REQ-17-008
+# --- Security (GuardDuty - REQ-17-008 for findings) ---
 module "guardduty" {
   source = "../../modules/security/guardduty"
 
-  enable_guardduty             = true
-  finding_publishing_frequency = "SIX_HOURS" # Prod specific, or as per security policy
-  export_findings_to_s3        = var.guardduty_export_findings_s3_prod # Prod specific bool (likely true)
-  s3_bucket_name               = var.guardduty_s3_bucket_name_prod     # If above is true, dedicated bucket
-  enable_alerting              = true
-  alert_sns_topic_arn          = module.sns_topics.alert_topics["security_alerts_topic"].arn
-  alert_severity_threshold_gte = 7 # High severity for prod alerts
-  common_tags                  = local.common_tags
+  enable_guardduty               = true
+  publish_findings_to_s3       = true
+  s3_bucket_for_findings_name  = "${local.resource_prefix}-guardduty-findings" # Ensure S3 bucket is provisioned, possibly by another module
+  enable_eventbridge_alerts    = true
+  findings_sns_topic_arn       = module.sns_topics.topic_arns["security_alerts_prod"]
+  guardduty_finding_severities = ["LOW", "MEDIUM", "HIGH"] # Monitor all severities for prod
+
+  tags = local.env_tags
 }
 
-# --- Common Local Variables ---
-locals {
-  common_tags = merge(
-    var.default_tags, # Assuming prod/variables.tf defines default_tags or inherits from root
-    {
-      "Environment" = var.environment_name,
-      "Project"     = var.project_name
-    }
-  )
+# --- AWS Config Rules ---
+module "s3_public_access_blocked_rule_prod" {
+  source = "../../policies/aws_config_rules/ensure_s3_public_access_blocked"
+  rule_name = "${local.resource_prefix}-s3-public-access-blocked"
+  # Potentially enable auto-remediation for prod if requirements allow
 }
 
-# --- Outputs from the Production Environment ---
-output "vpc_id" {
-  description = "The ID of the VPC for production."
+
+# --- Data Sources ---
+data "aws_availability_zones" "available" {}
+data "aws_caller_identity" "current" {}
+
+
+# --- Outputs ---
+output "prod_vpc_id" {
+  description = "ID of the production VPC"
   value       = module.vpc.vpc_id
 }
 
-output "eks_cluster_name" {
-  description = "The name of the EKS cluster for production."
+output "prod_eks_cluster_name" {
+  description = "Name of the production EKS cluster"
   value       = module.eks_cluster.cluster_name
 }
 
-output "rds_aurora_cluster_endpoint" {
-  description = "The endpoint of the RDS Aurora cluster for production."
+output "prod_rds_cluster_endpoint" {
+  description = "Endpoint for the production RDS Aurora cluster"
   value       = module.rds_aurora_postgresql.cluster_endpoint
+  sensitive   = true
 }
-# Add other critical outputs for production

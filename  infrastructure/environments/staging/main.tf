@@ -3,192 +3,238 @@
 # LogicDescription: Calls shared infrastructure modules with configurations specific to 'staging'.
 # Parameters often mirror production but with potentially scaled-down resources or specific testing configurations.
 # Integrates with staging-specific secrets and monitoring.
+# ImplementedFeatures: Staging VPC Setup, Staging EKS Cluster, Staging RDS Instances, Staging Monitoring & Alerting Setup
+# RequirementIds: REQ-8-011, REQ-17-005, REQ-17-006, REQ-17-007, REQ-17-008, REQ-17-009
 
-# --- Core Networking ---
+# Global/Shared Variables (assumed from root or injected)
+variable "aws_region" {}
+variable "project_name" {}
+variable "organization_name" {}
+variable "default_tags" {
+  type    = map(string)
+  default = {}
+}
+
+# Environment specific variables (defined in environments/staging/variables.tf)
+variable "vpc_cidr" {}
+variable "public_subnet_cidrs" {}
+variable "private_subnet_cidrs" {}
+variable "eks_cluster_version" {}
+variable "eks_node_instance_type" {}
+variable "eks_node_min_size" {}
+variable "eks_node_max_size" {}
+variable "eks_node_desired_size" {}
+variable "rds_engine_version" {}
+variable "rds_instance_class" {}
+variable "rds_instances_count" {}
+variable "rds_backup_retention_period" {}
+
+variable "environment_name" {
+  description = "Name of the environment"
+  type        = string
+  default     = "staging"
+}
+
+locals {
+  env_tags = merge(
+    var.default_tags,
+    {
+      "Environment" = var.environment_name,
+      "Project"     = var.project_name
+    }
+  )
+  resource_prefix = "${var.project_name}-${var.environment_name}"
+}
+
+# --- Networking ---
 module "vpc" {
   source = "../../modules/networking/vpc"
 
-  vpc_cidr_block      = var.vpc_cidr_block       # Staging specific value from staging/variables.tf
-  public_subnet_cidrs = var.public_subnet_cidrs  # Staging specific value
-  private_subnet_cidrs = var.private_subnet_cidrs # Staging specific value
-  availability_zones  = var.availability_zones   # Staging specific or default
-  enable_nat_gateway  = var.enable_nat_gateway   # Staging specific (likely true)
-  single_nat_gateway  = var.single_nat_gateway   # Staging specific (potentially false for HA testing)
-  project_name        = var.project_name
-  environment         = var.environment_name
-  common_tags         = local.common_tags
+  vpc_cidr_block      = var.vpc_cidr
+  public_subnet_cidrs = var.public_subnet_cidrs
+  private_subnet_cidrs = var.private_subnet_cidrs
+  availability_zones  = slice(data.aws_availability_zones.available.names, 0, 2) # Staging might use 2 AZs
+  enable_nat_gateway  = true
+  single_nat_gateway  = false # Staging might use redundant NAT Gateways if closer to prod setup
+
+  tags = local.env_tags
 }
 
-# --- EKS Cluster ---
-module "eks_cluster" {
-  source = "../../modules/kubernetes/eks_cluster"
+# --- Secrets Management (REQ-8-011) ---
+module "secrets_manager" {
+  source = "../../modules/security/secrets_manager"
 
-  cluster_name                  = "${var.project_name}-${var.environment_name}-eks"
-  cluster_version               = var.eks_cluster_version           # Staging specific
-  vpc_id                        = module.vpc.vpc_id
-  private_subnet_ids            = module.vpc.private_subnet_ids
-  control_plane_subnet_ids      = module.vpc.private_subnet_ids
-  node_group_instance_types     = var.eks_node_group_instance_types # Staging specific (e.g., m5.large)
-  node_group_desired_size       = var.eks_node_group_desired_size   # Staging specific (e.g., 2-3)
-  node_group_min_size           = var.eks_node_group_min_size
-  node_group_max_size           = var.eks_node_group_max_size
-  project_name                  = var.project_name
-  environment                   = var.environment_name
-  aws_region                    = var.aws_region
-  common_tags                   = local.common_tags
-  enable_external_secrets       = true # REQ-8-011
-  external_secrets_iam_role_name = "${var.project_name}-${var.environment_name}-eso-role"
-  enable_prometheus_stack_dependency_config = true # For APM/Alerting REQ-17-005, REQ-17-006
+  secrets_to_create = {
+    rds_master_password = {
+      description             = "Master password for RDS instance in ${var.environment_name}"
+      recovery_window_in_days = 7 # Short recovery for staging
+      generate_random_password = {
+        length           = 16
+        special_characters = true
+      }
+    }
+    # Add other secrets as needed for staging
+  }
+  common_tags = local.env_tags
 }
 
 # --- Database (RDS Aurora PostgreSQL) ---
 module "rds_aurora_postgresql" {
   source = "../../modules/database/rds_aurora"
 
-  cluster_identifier      = "${var.project_name}-${var.environment_name}-aurora-pg"
+  cluster_identifier      = "${local.resource_prefix}-aurora-pg"
   engine                  = "aurora-postgresql"
-  engine_version          = var.rds_engine_version            # Staging specific
-  instance_class          = var.rds_instance_class            # Staging specific (e.g., db.r6g.large)
-  instances_count         = var.rds_instances_count           # Staging specific (e.g., 2 for HA)
+  engine_version          = var.rds_engine_version
+  instance_class          = var.rds_instance_class
+  instances_count         = var.rds_instances_count # Staging might have 2 instances for some HA testing
+  publicly_accessible     = false
   vpc_id                  = module.vpc.vpc_id
-  db_subnet_group_name    = module.vpc.database_subnet_group_name
-  vpc_security_group_ids  = [module.vpc.default_security_group_id] # Dedicated SG recommended
-  db_name                 = var.rds_db_name                   # Staging specific
-  master_username         = var.rds_master_username           # Staging specific
-  master_password         = var.rds_master_password           # Securely injected for staging
-  backup_retention_period = var.rds_backup_retention_period # Staging specific (e.g., 15 days)
-  skip_final_snapshot     = false                             # Keep final snapshot for staging
-  project_name            = var.project_name
-  environment             = var.environment_name
-  common_tags             = local.common_tags
-  enable_monitoring_alerts = true # REQ-17-007
-  alarm_sns_topic_arn      = module.sns_topics.alert_topics["critical_alerts_topic"].arn
+  subnet_ids              = module.vpc.private_subnet_ids
+  db_name                 = "${var.project_name}_staging_db"
+  master_username         = "adminuser"
+  master_password_secret_arn = module.secrets_manager.secrets["rds_master_password"].arn
+  backup_retention_period = var.rds_backup_retention_period # e.g., 15 days for staging
+  skip_final_snapshot     = false # Staging might keep final snapshot
+  storage_encrypted       = true
+  deletion_protection     = false # Staging might be deletable
+
+  # Monitoring & Alerting for RDS (REQ-17-007)
+  enable_cloudwatch_alarms = true
+  alarm_sns_topic_arn      = module.sns_topics.topic_arns["critical_alerts_staging"]
+
+  tags = local.env_tags
 }
 
-# --- Secrets Management (AWS Secrets Manager for App Secrets) ---
-# REQ-8-011
-module "application_secrets" {
-  source = "../../modules/security/secrets_manager"
+# --- Kubernetes (EKS) ---
+module "eks_cluster" {
+  source = "../../modules/kubernetes/eks_cluster"
 
-  secrets_config = {
-    "myapplication/staging/api_key" = {
-      description             = "API Key for My Application in Staging"
-      recovery_window_in_days = 7
-      secret_string           = "staging-dummy-api-key-to-be-replaced" # Placeholder
-      tags                    = local.common_tags
+  cluster_name    = "${local.resource_prefix}-eks"
+  cluster_version = var.eks_cluster_version
+  vpc_id          = module.vpc.vpc_id
+  subnet_ids      = module.vpc.private_subnet_ids
+
+  managed_node_groups = {
+    general_purpose_staging = {
+      instance_types = [var.eks_node_instance_type]
+      min_size       = var.eks_node_min_size
+      max_size       = var.eks_node_max_size
+      desired_size   = var.eks_node_desired_size
+      disk_size      = 50
     }
-    # Add other staging specific secrets
   }
-  common_tags = local.common_tags
+
+  # Secrets integration (REQ-8-011)
+  enable_external_secrets_operator = true
+  external_secrets_iam_role_name   = "${local.resource_prefix}-eso-role"
+
+  # APM Configuration (REQ-17-005)
+  enable_apm_tooling = true
+
+  # Cluster Alerting Configuration (REQ-17-006, REQ-17-007)
+  enable_cluster_alerting_components = true
+
+  tags = local.env_tags
 }
 
-# --- Monitoring & Alerting (Prometheus Stack on EKS) ---
-# REQ-17-005, REQ-17-006, REQ-17-007
+# --- Monitoring & Alerting (Prometheus Stack on EKS - REQ-17-005, REQ-17-006, REQ-17-007) ---
 module "prometheus_stack" {
   source = "../../modules/monitoring/prometheus_stack"
+  depends_on = [module.eks_cluster]
 
-  eks_cluster_name          = module.eks_cluster.cluster_name
-  eks_oidc_provider_arn     = module.eks_cluster.oidc_provider_arn
-  eks_cluster_endpoint      = module.eks_cluster.cluster_endpoint
-  eks_cluster_ca_certificate = module.eks_cluster.cluster_ca_certificate
+  eks_cluster_name         = module.eks_cluster.cluster_name
+  eks_oidc_provider_arn    = module.eks_cluster.oidc_provider_arn
+  eks_cluster_endpoint     = module.eks_cluster.cluster_endpoint
+  eks_cluster_ca_certificate = module.eks_cluster.cluster_certificate_authority_data
+  
+  namespace                = "monitoring-staging"
+  grafana_admin_password_secret_name = "grafana-admin-password-${var.environment_name}"
+  grafana_pvc_storage_class = "gp2"
+  grafana_pvc_size          = "5Gi"
 
-  namespace                 = "monitoring"
-  create_namespace          = true
-  grafana_admin_password    = var.grafana_admin_password # Securely injected for staging
-  alertmanager_config       = var.staging_alertmanager_config # Defined in staging/variables.tf or tfvars
-                                                            # Similar structure to dev, but pointing to staging SNS topics
-  prometheus_rules          = var.staging_prometheus_rules    # Defined in staging/variables.tf or tfvars
-  common_tags               = local.common_tags
+  prometheus_pvc_storage_class = "gp2"
+  prometheus_pvc_size          = "10Gi"
+
+  alertmanager_config_secret_name = "alertmanager-config-${var.environment_name}"
+  # Configure Alertmanager to route to staging SNS topics
+
+  alert_rules_enabled = true
+  tags = local.env_tags
 }
 
-# --- SNS Topics for Alerting ---
-# REQ-17-006, REQ-17-009
+# --- Alerting SNS Topics (REQ-17-009) ---
 module "sns_topics" {
   source = "../../modules/alerting/sns_topics"
 
-  topic_names_with_config = {
-    "critical_alerts_topic" = {
-      display_name = "${var.project_name}-${var.environment_name}-critical-alerts"
-      subscriptions = [
-        { protocol = "email", endpoint = var.critical_alerts_email } # Staging specific email
-      ]
-    },
-    "warning_alerts_topic" = {
-      display_name = "${var.project_name}-${var.environment_name}-warning-alerts"
-      subscriptions = [
-        { protocol = "email", endpoint = var.warning_alerts_email } # Staging specific email
-      ]
-    },
-    "backup_failure_alerts_topic" = { # REQ-17-008
-      display_name = "${var.project_name}-${var.environment_name}-backup-failures"
-      subscriptions = [
-        { protocol = "email", endpoint = var.backup_alerts_email } # Staging specific email
-      ]
-    },
-    "security_alerts_topic" = { # REQ-17-008
-      display_name = "${var.project_name}-${var.environment_name}-security-alerts"
-      subscriptions = [
-        { protocol = "email", endpoint = var.security_alerts_email } # Staging specific email
-      ]
-    }
+  topic_names_with_subscriptions = {
+    "critical_alerts_staging" = [{ protocol = "email", endpoint = "staging-alerts-critical@example.com" }],
+    "warning_alerts_staging"  = [{ protocol = "email", endpoint = "staging-alerts-warning@example.com" }],
+    "security_alerts_staging" = [{ protocol = "email", endpoint = "staging-security-alerts@example.com" }], # REQ-17-008
+    "backup_alerts_staging"   = [{ protocol = "email", endpoint = "staging-backup-alerts@example.com" }]   # REQ-17-008
   }
-  common_tags = local.common_tags
+  allowed_publishers = [
+    "cloudwatch.amazonaws.com",
+    "events.amazonaws.com",
+  ]
+  tags = local.env_tags
 }
 
-# --- AWS Backup ---
-# REQ-17-008
+# --- Backup (AWS Backup - REQ-17-008 for failure alerts) ---
 module "aws_backup" {
   source = "../../modules/backup_restore/aws_backup"
 
-  vault_name           = "${var.project_name}-${var.environment_name}-backup-vault"
-  backup_plan_name     = "${var.project_name}-${var.environment_name}-daily-backup-plan"
-  iam_role_arn         = var.aws_backup_iam_role_arn      # Staging specific role or same as dev
-  schedule_expression  = "cron(0 4 ? * * *)"            # Daily at 4 AM UTC for staging
-  resource_assignments = var.staging_backup_resource_assignments # Defined in staging/variables.tf or tfvars
-  enable_alerting      = true
-  failure_sns_topic_arn = module.sns_topics.alert_topics["backup_failure_alerts_topic"].arn
-  common_tags          = local.common_tags
+  backup_vault_name = "${local.resource_prefix}-backup-vault"
+  backup_plan_name  = "${local.resource_prefix}-daily-backup-plan"
+  backup_schedule   = "cron(0 4 * * ? *)" # Daily at 4 AM UTC for staging
+  backup_tags_selection = {
+    "staging-backup" = "true"
+  }
+  cold_storage_after_days = 90 # Longer than dev, shorter than prod
+  delete_after_days       = 180
+
+  enable_backup_alerts = true
+  backup_alerts_sns_topic_arn = module.sns_topics.topic_arns["backup_alerts_staging"]
+
+  tags = local.env_tags
 }
 
-# --- Security (AWS GuardDuty) ---
-# REQ-17-008
+# --- Security (GuardDuty - REQ-17-008 for findings) ---
 module "guardduty" {
   source = "../../modules/security/guardduty"
 
-  enable_guardduty             = true
-  finding_publishing_frequency = "ONE_HOUR" # Staging specific
-  export_findings_to_s3        = var.guardduty_export_findings_s3_staging # Staging specific bool
-  s3_bucket_name               = var.guardduty_s3_bucket_name_staging     # If above is true
-  enable_alerting              = true
-  alert_sns_topic_arn          = module.sns_topics.alert_topics["security_alerts_topic"].arn
-  alert_severity_threshold_gte = 6 # Example: Medium and High for staging
-  common_tags                  = local.common_tags
+  enable_guardduty               = true
+  publish_findings_to_s3       = true # Enable for staging
+  s3_bucket_for_findings_name  = "${local.resource_prefix}-guardduty-findings" # This implies an S3 module or resource
+  enable_eventbridge_alerts    = true
+  findings_sns_topic_arn       = module.sns_topics.topic_arns["security_alerts_staging"]
+  guardduty_finding_severities = ["LOW", "MEDIUM", "HIGH"] # Wider range for staging
+
+  tags = local.env_tags
 }
 
-# --- Common Local Variables ---
-locals {
-  common_tags = merge(
-    var.default_tags, # Assuming staging/variables.tf defines default_tags or inherits from root
-    {
-      "Environment" = var.environment_name,
-      "Project"     = var.project_name
-    }
-  )
+# --- AWS Config Rules ---
+module "s3_public_access_blocked_rule_staging" {
+  source = "../../policies/aws_config_rules/ensure_s3_public_access_blocked"
+  rule_name = "${local.resource_prefix}-s3-public-access-blocked"
 }
 
-# --- Outputs from the Staging Environment ---
-output "vpc_id" {
-  description = "The ID of the VPC for staging."
+
+# --- Data Sources ---
+data "aws_availability_zones" "available" {}
+
+# --- Outputs ---
+output "staging_vpc_id" {
+  description = "ID of the staging VPC"
   value       = module.vpc.vpc_id
 }
 
-output "eks_cluster_name" {
-  description = "The name of the EKS cluster for staging."
+output "staging_eks_cluster_name" {
+  description = "Name of the staging EKS cluster"
   value       = module.eks_cluster.cluster_name
 }
 
-output "rds_aurora_cluster_endpoint" {
-  description = "The endpoint of the RDS Aurora cluster for staging."
+output "staging_rds_cluster_endpoint" {
+  description = "Endpoint for the staging RDS Aurora cluster"
   value       = module.rds_aurora_postgresql.cluster_endpoint
+  sensitive   = true
 }
-# Add other relevant outputs for staging
