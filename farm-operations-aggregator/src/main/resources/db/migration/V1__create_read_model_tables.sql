@@ -1,92 +1,69 @@
--- Read Model for Farmer Land Summary
+-- Flyway migration script for creating initial read model tables
+
+-- Farmer Land Summary View
+-- Stores aggregated land information per farmer.
 CREATE TABLE farmer_land_summary_view (
-    farmer_id VARCHAR(36) PRIMARY KEY,
+    farmer_id VARCHAR(36) PRIMARY KEY,          -- Assuming UUID for farmerId
     total_land_area DOUBLE PRECISION DEFAULT 0.0,
     number_of_plots INT DEFAULT 0,
-    last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    last_updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
-
 CREATE INDEX idx_flsv_farmer_id ON farmer_land_summary_view(farmer_id);
 
--- Read Model for Farmer Active Crop Cycles
+-- Farmer Active Crop Cycle View
+-- Stores information about currently active crop cycles for farmers.
 CREATE TABLE farmer_active_crop_cycle_view (
-    id VARCHAR(36) PRIMARY KEY, -- Can be crop_cycle_id itself if universally unique
+    id VARCHAR(36) PRIMARY KEY,                  -- Assuming UUID for the view entry itself
     farmer_id VARCHAR(36) NOT NULL,
-    crop_cycle_id VARCHAR(36) NOT NULL UNIQUE,
+    crop_cycle_id VARCHAR(36) NOT NULL UNIQUE,   -- Assuming UUID for cropCycleId
     crop_name VARCHAR(255),
     cultivated_area DOUBLE PRECISION,
-    status VARCHAR(50), -- e.g., 'ACTIVE', 'PLANTED', 'GROWING'
+    status VARCHAR(50),                          -- e.g., 'ACTIVE', 'PLANTED', 'GROWING'
     start_date DATE,
-    expected_harvest_date DATE,
-    last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    last_updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
-
 CREATE INDEX idx_faccv_farmer_id ON farmer_active_crop_cycle_view(farmer_id);
 CREATE INDEX idx_faccv_crop_cycle_id ON farmer_active_crop_cycle_view(crop_cycle_id);
 CREATE INDEX idx_faccv_farmer_id_status ON farmer_active_crop_cycle_view(farmer_id, status);
 
--- Read Model for Farmer Harvest KPIs
+-- Farmer Harvest KPI View
+-- Stores key performance indicators related to harvests per crop cycle.
 CREATE TABLE farmer_harvest_kpi_view (
-    id VARCHAR(36) PRIMARY KEY, -- A new UUID for this record, or use crop_cycle_id if 1:1 and always present
+    id VARCHAR(36) PRIMARY KEY,                  -- Assuming UUID for the view entry
     farmer_id VARCHAR(36) NOT NULL,
     crop_cycle_id VARCHAR(36) NOT NULL UNIQUE,
     crop_name VARCHAR(255),
-    cultivated_area DOUBLE PRECISION,
-    total_production DOUBLE PRECISION, -- e.g., in kilograms
-    average_yield DOUBLE PRECISION, -- e.g., kg per hectare
+    average_yield DOUBLE PRECISION,              -- e.g., yield per hectare
+    total_production DOUBLE PRECISION,
     harvest_date DATE,
-    last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    last_updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
-
 CREATE INDEX idx_fhkv_farmer_id ON farmer_harvest_kpi_view(farmer_id);
 CREATE INDEX idx_fhkv_crop_cycle_id ON farmer_harvest_kpi_view(crop_cycle_id);
 CREATE INDEX idx_fhkv_farmer_id_harvest_date ON farmer_harvest_kpi_view(farmer_id, harvest_date DESC);
 
--- Read Model for System-wide Statistics (Single Row Table)
+-- System Stats View
+-- A single-row table storing system-wide statistics.
 CREATE TABLE system_stats_view (
-    id VARCHAR(50) PRIMARY KEY, -- e.g., 'singleton_stats_id'
+    id VARCHAR(50) PRIMARY KEY DEFAULT 'singleton', -- Fixed ID for the single row
     total_registered_farmers BIGINT DEFAULT 0,
     total_managed_land_area DOUBLE PRECISION DEFAULT 0.0,
-    total_active_crop_records BIGINT DEFAULT 0, -- Number of active crop cycles
-    last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    total_crop_records BIGINT DEFAULT 0,            -- Could be total active crop cycles or all historical
+    last_updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
-
--- Initialize the singleton row for system_stats_view
-INSERT INTO system_stats_view (id, total_registered_farmers, total_managed_land_area, total_active_crop_records, last_updated_at)
-VALUES ('singleton_stats_id', 0, 0.0, 0, CURRENT_TIMESTAMP)
-ON CONFLICT (id) DO NOTHING;
+-- Ensure only one row can exist if 'singleton' ID is used (application logic should enforce this)
+-- Or use a check constraint if DB supports it well for this case.
+-- INSERT INTO system_stats_view (id) VALUES ('singleton') ON CONFLICT (id) DO NOTHING; (handled by application logic on startup or first event)
 
 
--- Read Model for Data Quality Metrics (Single Row Table)
+-- Data Quality Metrics View
+-- A single-row table storing system-wide data quality metrics.
 CREATE TABLE data_quality_metrics_view (
-    id VARCHAR(50) PRIMARY KEY, -- e.g., 'singleton_metrics_id'
+    id VARCHAR(50) PRIMARY KEY DEFAULT 'singleton', -- Fixed ID for the single row
     farmer_profile_completeness_percentage DOUBLE PRECISION DEFAULT 0.0,
     land_gps_coverage_percentage DOUBLE PRECISION DEFAULT 0.0,
-    -- Add other data quality metrics as needed
-    total_farmers_for_completeness_calc BIGINT DEFAULT 0, -- Denominator for farmer profile completeness
-    total_land_plots_for_gps_calc BIGINT DEFAULT 0, -- Denominator for GPS coverage
-    land_plots_with_gps_for_gps_calc BIGINT DEFAULT 0, -- Numerator for GPS coverage
-    last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    -- Add other DQ metrics as needed
+    last_updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
-
--- Initialize the singleton row for data_quality_metrics_view
-INSERT INTO data_quality_metrics_view (id, farmer_profile_completeness_percentage, land_gps_coverage_percentage, total_farmers_for_completeness_calc, total_land_plots_for_gps_calc, land_plots_with_gps_for_gps_calc, last_updated_at)
-VALUES ('singleton_metrics_id', 0.0, 0.0, 0, 0, 0, CURRENT_TIMESTAMP)
-ON CONFLICT (id) DO NOTHING;
-
--- Function to update last_updated_at column automatically (Optional, can be handled by application logic)
-CREATE OR REPLACE FUNCTION update_modified_column()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.last_updated_at = NOW();
-    RETURN NEW;
-END;
-$$ language 'plpgsql';
-
--- Apply the trigger to tables if you want DB to manage last_updated_at
--- Note: R2DBC/Spring Data might handle this at application level more easily for reactive flows.
--- Example for one table:
--- CREATE TRIGGER update_farmer_land_summary_modtime
--- BEFORE UPDATE ON farmer_land_summary_view
--- FOR EACH ROW EXECUTE FUNCTION update_modified_column();
--- (Repeat for other tables if desired)
+-- Ensure only one row can exist
+-- INSERT INTO data_quality_metrics_view (id) VALUES ('singleton') ON CONFLICT (id) DO NOTHING; (handled by application logic)
