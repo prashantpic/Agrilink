@@ -1,151 +1,143 @@
+# Description: Configures alerts for AWS Backup job failures.
 # Purpose: Notify administrators promptly of AWS Backup job failures or issues.
-# LogicDescription: Sets up AWS CloudWatch Event rules (or EventBridge rules) to capture events
-# related to AWS Backup job status and trigger notifications to an SNS topic.
-# REQ-17-008: Alert on backup job failures.
+# Requirements: REQ-17-008
 
 variable "backup_failure_sns_topic_arn" {
-  description = "ARN of the SNS topic to send backup failure notifications to."
+  description = "ARN of the SNS topic to send AWS Backup failure notifications to."
   type        = string
 }
 
 variable "aws_region" {
-  description = "AWS Region where the backup events occur."
+  description = "AWS region where the resources are deployed."
   type        = string
 }
 
 variable "tags" {
-  description = "A map of tags to add to all resources."
+  description = "A map of tags to assign to the resources."
   type        = map(string)
   default     = {}
 }
 
-locals {
-  event_states_to_alert = ["FAILED", "EXPIRED", "ABORTED", "TIMED_OUT"] # Added TIMED_OUT as another failure state
+variable "event_bus_name" {
+  description = "The name of the event bus to use. Defaults to the default event bus."
+  type        = string
+  default     = "default" # AWS default event bus
 }
 
-data "aws_caller_identity" "current" {}
-data "aws_partition" "current" {}
+# IAM Role for EventBridge to publish to SNS topic
+data "aws_iam_policy_document" "eventbridge_sns_publish_policy_doc" {
+  statement {
+    actions   = ["sns:Publish"]
+    resources = [var.backup_failure_sns_topic_arn]
+    effect    = "Allow"
+  }
+}
 
-# IAM Role for EventBridge to publish to SNS
-resource "aws_iam_role" "backup_event_sns_publish_role" {
-  name = "BackupEventToSNSPublishRole"
+resource "aws_iam_role" "eventbridge_to_sns_role_backup_failure" {
+  name_prefix        = "EventBridgeBackupFailureRole-"
   assume_role_policy = jsonencode({
-    Version = "2012-10-17",
+    Version   = "2012-10-17",
     Statement = [{
-      Action = "sts:AssumeRole",
-      Effect = "Allow",
+      Action    = "sts:AssumeRole",
+      Effect    = "Allow",
       Principal = {
         Service = "events.amazonaws.com"
       }
     }]
   })
-  tags = var.tags
+  tags = merge(var.tags, { Name = "EventBridgeBackupFailureRole" })
 }
 
-resource "aws_iam_policy" "backup_event_sns_publish_policy" {
-  name   = "BackupEventSNSPublishPolicy"
-  policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [{
-      Action   = "sns:Publish",
-      Effect   = "Allow",
-      Resource = var.backup_failure_sns_topic_arn
-    }]
-  })
-  tags = var.tags
+resource "aws_iam_policy" "eventbridge_sns_publish_policy_backup_failure" {
+  name_prefix = "EventBridgeSnsPublishBackupPolicy-"
+  policy      = data.aws_iam_policy_document.eventbridge_sns_publish_policy_doc.json
+  tags        = merge(var.tags, { Name = "EventBridgeSnsPublishBackupPolicy" })
 }
 
-resource "aws_iam_role_policy_attachment" "backup_event_sns_publish_attach" {
-  role       = aws_iam_role.backup_event_sns_publish_role.name
-  policy_arn = aws_iam_policy.backup_event_sns_publish_policy.arn
+resource "aws_iam_role_policy_attachment" "eventbridge_sns_publish_attach_backup_failure" {
+  role       = aws_iam_role.eventbridge_to_sns_role_backup_failure.name
+  policy_arn = aws_iam_policy.eventbridge_sns_publish_policy_backup_failure.arn
 }
 
-# EventBridge Rule for Backup Job State Changes
-resource "aws_cloudwatch_event_rule" "backup_job_state_change_rule" {
-  name        = "AWSBackupJobStateChangeAlertRule"
-  description = "Captures AWS Backup job state changes for alerting."
+
+# EventBridge rule for Backup Job Failures
+resource "aws_cloudwatch_event_rule" "backup_job_failed_rule" {
+  name          = "AWSBackupJobFailedRule"
+  description   = "Alert on AWS Backup job failures (FAILED, EXPIRED, ABORTED, INCOMPLETE states)"
+  event_bus_name = var.event_bus_name
   event_pattern = jsonencode({
     "source" : ["aws.backup"],
     "detail-type" : ["Backup Job State Change"],
     "detail" : {
-      "state" : local.event_states_to_alert
+      "state" : [
+        "FAILED",
+        "EXPIRED", # A backup job could expire if it doesn't complete within its window
+        "ABORTED",
+        "INCOMPLETE" # Jobs that did not complete successfully
+      ]
     }
   })
-  tags = var.tags
+  tags = merge(var.tags, { Name = "AWSBackupJobFailedRule" })
 }
 
-resource "aws_cloudwatch_event_target" "backup_job_state_change_target" {
-  rule      = aws_cloudwatch_event_rule.backup_job_state_change_rule.name
+resource "aws_cloudwatch_event_target" "backup_job_failed_sns_target" {
+  rule      = aws_cloudwatch_event_rule.backup_job_failed_rule.name
   target_id = "SendToBackupFailureSNS"
   arn       = var.backup_failure_sns_topic_arn
-  role_arn  = aws_iam_role.backup_event_sns_publish_role.arn # Required if target needs permissions beyond basic SNS publish
-
-  # Input transformer to make the notification more readable
-  input_transformer {
-    input_paths = {
-      "awsRegion"        = "$.awsRegion",
-      "backupJobId"      = "$.detail.backupJobId",
-      "backupVaultName"  = "$.detail.backupVaultName",
-      "resourceArn"      = "$.detail.resourceArn",
-      "resourceType"     = "$.detail.resourceType",
-      "state"            = "$.detail.state",
-      "statusMessage"    = "$.detail.statusMessage",
-      "time"             = "$.time"
-    }
-    input_template = <<TEMPLATE
-"AWS Backup Job Notification"
-"Time: <time>"
-"Region: <awsRegion>"
-"Status: <state>"
-"Backup Job ID: <backupJobId>"
-"Backup Vault: <backupVaultName>"
-"Resource ARN: <resourceArn>"
-"Resource Type: <resourceType>"
-"Message: <statusMessage>"
-"Link to Backup Job: https://<awsRegion>.console.aws.amazon.com/backup/home?region=<awsRegion>#backup-job/<backupJobId>"
-TEMPLATE
-  }
+  role_arn  = aws_iam_role.eventbridge_to_sns_role_backup_failure.arn # Required if target is SNS and rule is in different account or needs specific perms
+  event_bus_name = var.event_bus_name
 }
 
-# EventBridge Rule for Restore Job State Changes
-resource "aws_cloudwatch_event_rule" "restore_job_state_change_rule" {
-  name        = "AWSRestoreJobStateChangeAlertRule"
-  description = "Captures AWS Backup restore job state changes for alerting."
+# EventBridge rule for Restore Job Failures
+resource "aws_cloudwatch_event_rule" "restore_job_failed_rule" {
+  name          = "AWSRestoreJobFailedRule"
+  description   = "Alert on AWS Backup restore job failures"
+  event_bus_name = var.event_bus_name
   event_pattern = jsonencode({
     "source" : ["aws.backup"],
     "detail-type" : ["Restore Job State Change"],
     "detail" : {
-      "status" : local.event_states_to_alert # Restore jobs use 'status' instead of 'state'
+      "status" : [ # Note: 'status' for Restore Job, 'state' for Backup Job
+        "FAILED",
+        "ABORTED",
+        "INCOMPLETE"
+      ]
     }
   })
-  tags = var.tags
+  tags = merge(var.tags, { Name = "AWSRestoreJobFailedRule" })
 }
 
-resource "aws_cloudwatch_event_target" "restore_job_state_change_target" {
-  rule      = aws_cloudwatch_event_rule.restore_job_state_change_rule.name
-  target_id = "SendToRestoreFailureSNS"
+resource "aws_cloudwatch_event_target" "restore_job_failed_sns_target" {
+  rule      = aws_cloudwatch_event_rule.restore_job_failed_rule.name
+  target_id = "SendRestoreFailureToSNS"
   arn       = var.backup_failure_sns_topic_arn
-  role_arn  = aws_iam_role.backup_event_sns_publish_role.arn # Required if target needs permissions
+  role_arn  = aws_iam_role.eventbridge_to_sns_role_backup_failure.arn
+  event_bus_name = var.event_bus_name
+}
 
-  # Input transformer to make the notification more readable
-  input_transformer {
-    input_paths = {
-      "awsRegion"        = "$.awsRegion",
-      "restoreJobId"     = "$.detail.restoreJobId",
-      "resourceType"     = "$.detail.resourceType",
-      "status"           = "$.detail.status",
-      "statusMessage"    = "$.detail.statusMessage",
-      "time"             = "$.time"
+# Optional: Rule for Copy Job Failures
+resource "aws_cloudwatch_event_rule" "copy_job_failed_rule" {
+  name          = "AWSCopyJobFailedRule"
+  description   = "Alert on AWS Backup copy job failures"
+  event_bus_name = var.event_bus_name
+  event_pattern = jsonencode({
+    "source" : ["aws.backup"],
+    "detail-type" : ["Copy Job State Change"],
+    "detail" : {
+      "state" : [
+        "FAILED",
+        "ABORTED",
+        "INCOMPLETE"
+      ]
     }
-    input_template = <<TEMPLATE
-"AWS Restore Job Notification"
-"Time: <time>"
-"Region: <awsRegion>"
-"Status: <status>"
-"Restore Job ID: <restoreJobId>"
-"Resource Type: <resourceType>"
-"Message: <statusMessage>"
-"Link to Restore Job: https://<awsRegion>.console.aws.amazon.com/backup/home?region=<awsRegion>#restore-job/<restoreJobId>"
-TEMPLATE
-  }
+  })
+  tags = merge(var.tags, { Name = "AWSCopyJobFailedRule" })
+}
+
+resource "aws_cloudwatch_event_target" "copy_job_failed_sns_target" {
+  rule      = aws_cloudwatch_event_rule.copy_job_failed_rule.name
+  target_id = "SendCopyFailureToSNS"
+  arn       = var.backup_failure_sns_topic_arn
+  role_arn  = aws_iam_role.eventbridge_to_sns_role_backup_failure.arn
+  event_bus_name = var.event_bus_name
 }

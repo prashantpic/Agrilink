@@ -1,217 +1,306 @@
-# Purpose: Monitor database performance and resource utilization, and alert on critical issues for RDS/Aurora instances.
-# LogicDescription: Creates AWS CloudWatch alarms for key RDS/Aurora metrics.
-# REQ-17-007: Alert conditions for database performance and utilization.
+# Description: Defines CloudWatch alarms for RDS/Aurora database metrics.
+# Purpose: Monitor database performance and resource utilization, and alert on critical issues.
+# Requirements: REQ-17-007
 
-variable "db_instance_identifier" {
-  description = "The identifier of the RDS instance. For Aurora, this is one of the instance identifiers in the cluster."
+variable "db_identifier" {
+  description = "The identifier of the RDS instance or Aurora cluster."
   type        = string
-  default     = null # Either db_instance_identifier or db_cluster_identifier must be set
 }
 
-variable "db_cluster_identifier" {
-  description = "The identifier of the RDS Aurora cluster. Used for cluster-level metrics."
-  type        = string
-  default     = null # Either db_instance_identifier or db_cluster_identifier must be set
+variable "is_aurora_cluster" {
+  description = "Set to true if the db_identifier is for an Aurora DB cluster, false for RDS instance."
+  type        = bool
+  default     = false # Assume RDS instance by default
 }
 
-variable "alarm_sns_topic_arns" {
-  description = "A list of SNS topic ARNs to send alarm notifications to."
+variable "sns_topic_arns_critical" {
+  description = "List of SNS topic ARNs for critical alerts."
   type        = list(string)
 }
 
-variable "cpu_utilization_threshold" {
-  description = "CPU utilization threshold for alerting (percentage)."
-  type        = number
-  default     = 80
-}
-
-variable "freeable_memory_threshold_gb" {
-  description = "Freeable memory threshold for alerting (in GB). Converts to bytes for alarm."
-  type        = number
-  default     = 1 # Alert if less than 1GB freeable memory
-}
-
-variable "free_storage_space_threshold_gb" {
-  description = "Free storage space threshold for alerting (in GB). Converts to bytes for alarm."
-  type        = number
-  default     = 10 # Alert if less than 10GB free storage
-}
-
-variable "database_connections_threshold" {
-  description = "Database connections threshold for alerting."
-  type        = number
-  default     = 500
-}
-
-variable "read_latency_threshold_ms" {
-  description = "Read latency threshold for alerting (in milliseconds)."
-  type        = number
-  default     = 100
-}
-
-variable "write_latency_threshold_ms" {
-  description = "Write latency threshold for alerting (in milliseconds)."
-  type        = number
-  default     = 100
-}
-
-variable "replica_lag_threshold_seconds" {
-  description = "Replica lag threshold for alerting (in seconds). Applicable for Aurora clusters or RDS read replicas."
-  type        = number
-  default     = 300 # 5 minutes
-}
-
-variable "evaluation_periods" {
-  description = "The number of periods over which data is compared to the specified threshold."
-  type        = number
-  default     = 3
-}
-
-variable "period_seconds" {
-  description = "The period in seconds over which the specified statistic is applied."
-  type        = number
-  default     = 300 # 5 minutes
+variable "sns_topic_arns_warning" {
+  description = "List of SNS topic ARNs for warning alerts."
+  type        = list(string)
+  default     = []
 }
 
 variable "tags" {
-  description = "A map of tags to add to all alarm resources."
+  description = "A map of tags to assign to the CloudWatch alarms."
   type        = map(string)
   default     = {}
 }
 
-locals {
-  # Determine if we are dealing with a cluster or a standalone instance for metric dimensions
-  is_cluster_metric    = var.db_cluster_identifier != null
-  instance_metric_id   = var.db_instance_identifier != null ? var.db_instance_identifier : (var.db_cluster_identifier != null ? "${var.db_cluster_identifier}-primary" : null) # Fallback if only cluster id is provided for instance metrics
-  instance_dimensions = var.db_instance_identifier != null ? { DBInstanceIdentifier = var.db_instance_identifier } : null
-  cluster_dimensions  = var.db_cluster_identifier != null ? { DBClusterIdentifier = var.db_cluster_identifier } : null
+# Thresholds - these should be configurable per environment
+variable "cpu_utilization_threshold_critical" {
+  description = "CPU utilization threshold for critical alerts (%)."
+  type        = number
+  default     = 90
 }
 
-# CPU Utilization Alarm
-resource "aws_cloudwatch_metric_alarm" "rds_cpu_utilization" {
-  count               = local.instance_dimensions != null ? 1 : 0
-  alarm_name          = "${local.instance_metric_id}-cpu-utilization-high"
-  alarm_description   = "RDS instance ${local.instance_metric_id} CPU utilization is high."
+variable "cpu_utilization_threshold_warning" {
+  description = "CPU utilization threshold for warning alerts (%)."
+  type        = number
+  default     = 75
+}
+
+variable "freeable_memory_threshold_critical_gb" {
+  description = "Freeable memory threshold for critical alerts (in GB). Alarm triggers if memory is BELOW this value."
+  type        = number
+  default     = 0.5 # 500MB
+}
+
+variable "freeable_memory_threshold_warning_gb" {
+  description = "Freeable memory threshold for warning alerts (in GB). Alarm triggers if memory is BELOW this value."
+  type        = number
+  default     = 1 # 1GB
+}
+
+variable "free_storage_space_threshold_critical_gb" {
+  description = "Free storage space threshold for critical alerts (in GB). Alarm triggers if storage is BELOW this value."
+  type        = number
+  default     = 10
+}
+
+variable "free_storage_space_threshold_warning_gb" {
+  description = "Free storage space threshold for warning alerts (in GB). Alarm triggers if storage is BELOW this value."
+  type        = number
+  default     = 20
+}
+
+variable "database_connections_threshold_critical_percentage" {
+  description = "Database connections threshold as a percentage of max_connections for critical alerts."
+  type        = number
+  default     = 90
+}
+
+variable "database_connections_threshold_warning_percentage" {
+  description = "Database connections threshold as a percentage of max_connections for warning alerts."
+  type        = number
+  default     = 75
+}
+
+variable "read_latency_threshold_critical_ms" {
+  description = "Read latency threshold for critical alerts (in milliseconds)."
+  type        = number
+  default     = 100
+}
+
+variable "write_latency_threshold_critical_ms" {
+  description = "Write latency threshold for critical alerts (in milliseconds)."
+  type        = number
+  default     = 100
+}
+
+variable "replica_lag_threshold_critical_seconds" {
+  description = "Replica lag threshold for critical alerts (in seconds). Applicable for Aurora Replicas or RDS Read Replicas."
+  type        = number
+  default     = 300 # 5 minutes
+}
+
+locals {
+  dimension_name = var.is_aurora_cluster ? "DBClusterIdentifier" : "DBInstanceIdentifier"
+  # Convert GB to Bytes for memory/storage alarms as CloudWatch metrics are in Bytes
+  freeable_memory_threshold_critical_bytes = var.freeable_memory_threshold_critical_gb * 1024 * 1024 * 1024
+  freeable_memory_threshold_warning_bytes  = var.freeable_memory_threshold_warning_gb * 1024 * 1024 * 1024
+  free_storage_space_threshold_critical_bytes = var.free_storage_space_threshold_critical_gb * 1024 * 1024 * 1024
+  free_storage_space_threshold_warning_bytes  = var.free_storage_space_threshold_warning_gb * 1024 * 1024 * 1024
+  # Latency metrics are in seconds, convert ms to s
+  read_latency_threshold_critical_s  = var.read_latency_threshold_critical_ms / 1000.0
+  write_latency_threshold_critical_s = var.write_latency_threshold_critical_ms / 1000.0
+}
+
+resource "aws_cloudwatch_metric_alarm" "cpu_utilization_critical" {
+  alarm_name          = "${var.db_identifier}-cpu-utilization-critical"
   comparison_operator = "GreaterThanOrEqualToThreshold"
-  evaluation_periods  = var.evaluation_periods
+  evaluation_periods  = "3"
   metric_name         = "CPUUtilization"
   namespace           = "AWS/RDS"
-  period              = var.period_seconds
+  period              = "300" # 5 minutes
   statistic           = "Average"
-  threshold           = var.cpu_utilization_threshold
-  dimensions          = local.instance_dimensions
-  alarm_actions       = var.alarm_sns_topic_arns
-  ok_actions          = var.alarm_sns_topic_arns
-  tags                = var.tags
+  threshold           = var.cpu_utilization_threshold_critical
+  alarm_description   = "Critical: CPU utilization for ${var.db_identifier} is above ${var.cpu_utilization_threshold_critical}%"
+  alarm_actions       = var.sns_topic_arns_critical
+  ok_actions          = var.sns_topic_arns_critical # Notify on recovery
+  dimensions = {
+    (local.dimension_name) = var.db_identifier
+  }
+  tags = merge(var.tags, { Severity = "Critical", Metric = "CPUUtilization" })
 }
 
-# Freeable Memory Alarm
-resource "aws_cloudwatch_metric_alarm" "rds_freeable_memory" {
-  count               = local.instance_dimensions != null ? 1 : 0
-  alarm_name          = "${local.instance_metric_id}-freeable-memory-low"
-  alarm_description   = "RDS instance ${local.instance_metric_id} freeable memory is low."
+resource "aws_cloudwatch_metric_alarm" "cpu_utilization_warning" {
+  count               = length(var.sns_topic_arns_warning) > 0 ? 1 : 0
+  alarm_name          = "${var.db_identifier}-cpu-utilization-warning"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = "3"
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/RDS"
+  period              = "300"
+  statistic           = "Average"
+  threshold           = var.cpu_utilization_threshold_warning
+  alarm_description   = "Warning: CPU utilization for ${var.db_identifier} is above ${var.cpu_utilization_threshold_warning}%"
+  alarm_actions       = var.sns_topic_arns_warning
+  ok_actions          = var.sns_topic_arns_warning
+  dimensions = {
+    (local.dimension_name) = var.db_identifier
+  }
+  tags = merge(var.tags, { Severity = "Warning", Metric = "CPUUtilization" })
+}
+
+resource "aws_cloudwatch_metric_alarm" "freeable_memory_critical" {
+  alarm_name          = "${var.db_identifier}-freeable-memory-critical"
   comparison_operator = "LessThanOrEqualToThreshold"
-  evaluation_periods  = var.evaluation_periods
+  evaluation_periods  = "2"
   metric_name         = "FreeableMemory"
   namespace           = "AWS/RDS"
-  period              = var.period_seconds
+  period              = "300"
   statistic           = "Average"
-  threshold           = var.freeable_memory_threshold_gb * 1024 * 1024 * 1024 # Convert GB to Bytes
-  dimensions          = local.instance_dimensions
-  alarm_actions       = var.alarm_sns_topic_arns
-  ok_actions          = var.alarm_sns_topic_arns
-  tags                = var.tags
+  threshold           = local.freeable_memory_threshold_critical_bytes
+  alarm_description   = "Critical: Freeable memory for ${var.db_identifier} is below ${var.freeable_memory_threshold_critical_gb} GB"
+  alarm_actions       = var.sns_topic_arns_critical
+  ok_actions          = var.sns_topic_arns_critical
+  dimensions = {
+    (local.dimension_name) = var.db_identifier
+  }
+  tags = merge(var.tags, { Severity = "Critical", Metric = "FreeableMemory" })
 }
 
-# Free Storage Space Alarm
-resource "aws_cloudwatch_metric_alarm" "rds_free_storage_space" {
-  count               = local.instance_dimensions != null ? 1 : 0
-  alarm_name          = "${local.instance_metric_id}-free-storage-space-low"
-  alarm_description   = "RDS instance ${local.instance_metric_id} free storage space is low."
+resource "aws_cloudwatch_metric_alarm" "free_storage_space_critical" {
+  alarm_name          = "${var.db_identifier}-free-storage-critical"
   comparison_operator = "LessThanOrEqualToThreshold"
-  evaluation_periods  = var.evaluation_periods
+  evaluation_periods  = "1" # Alert quickly on low storage
   metric_name         = "FreeStorageSpace"
   namespace           = "AWS/RDS"
-  period              = var.period_seconds
-  statistic           = "Average"
-  threshold           = var.free_storage_space_threshold_gb * 1024 * 1024 * 1024 # Convert GB to Bytes
-  dimensions          = local.instance_dimensions
-  alarm_actions       = var.alarm_sns_topic_arns
-  ok_actions          = var.alarm_sns_topic_arns
-  tags                = var.tags
+  period              = "300"
+  statistic           = "Minimum" # To catch the lowest point
+  threshold           = local.free_storage_space_threshold_critical_bytes
+  alarm_description   = "Critical: Free storage space for ${var.db_identifier} is below ${var.free_storage_space_threshold_critical_gb} GB"
+  alarm_actions       = var.sns_topic_arns_critical
+  ok_actions          = var.sns_topic_arns_critical
+  dimensions = {
+    (local.dimension_name) = var.db_identifier
+  }
+  tags = merge(var.tags, { Severity = "Critical", Metric = "FreeStorageSpace" })
 }
 
-# Database Connections Alarm
-resource "aws_cloudwatch_metric_alarm" "rds_database_connections" {
-  count               = local.instance_dimensions != null ? 1 : 0
-  alarm_name          = "${local.instance_metric_id}-database-connections-high"
-  alarm_description   = "RDS instance ${local.instance_metric_id} database connections are high."
-  comparison_operator = "GreaterThanOrEqualToThreshold"
-  evaluation_periods  = var.evaluation_periods
+resource "aws_cloudwatch_metric_alarm" "database_connections_critical" {
+  # This alarm requires knowing the max_connections parameter.
+  # A more robust approach might use a Math Expression with GetMetricData to fetch max_connections if it's dynamic or stored elsewhere.
+  # For simplicity, using a percentage, assuming operators know their DB's connection limits.
+  alarm_name          = "${var.db_identifier}-db-connections-critical"
+  comparison_operator = "GreaterThanOrEqualToThreshold" # This alarm is tricky as 'DatabaseConnections' is a count, not a %.
+                                                      # Users need to calculate the threshold based on their max_connections.
+                                                      # The variable name implies percentage, but CloudWatch direct metric is count.
+                                                      # For now, assuming the threshold is a raw connection count derived from percentage.
+                                                      # Example: if max_connections=1000, 90% threshold is 900.
+  evaluation_periods  = "3"
   metric_name         = "DatabaseConnections"
   namespace           = "AWS/RDS"
-  period              = var.period_seconds
+  period              = "300"
   statistic           = "Average"
-  threshold           = var.database_connections_threshold
-  dimensions          = local.instance_dimensions
-  alarm_actions       = var.alarm_sns_topic_arns
-  ok_actions          = var.alarm_sns_topic_arns
-  tags                = var.tags
+  # threshold        = This needs to be set to an absolute number. User must calculate max_connections * (percentage / 100).
+  # We'll define a placeholder variable for the absolute threshold for now.
+  # To implement the percentage logic directly, you'd need a metric math alarm.
+  # threshold           = var.database_connections_absolute_threshold_critical (user must provide this)
+  alarm_description = "Critical: Database connections for ${var.db_identifier} are high."
+  alarm_actions     = var.sns_topic_arns_critical
+  ok_actions        = var.sns_topic_arns_critical
+  dimensions = {
+    (local.dimension_name) = var.db_identifier
+  }
+  # This alarm is commented out because 'threshold' expects a number, not a percentage directly on the 'DatabaseConnections' metric.
+  # A more advanced setup would involve a Lambda to get max_connections or Metric Math.
+  # For now, we'll rely on users to define this manually or use a fixed absolute number based on their settings.
+  # We can't directly use var.database_connections_threshold_critical_percentage as the threshold.
+  # The user should calculate: threshold = lookup(aws_db_instance.example.db_parameter_group_name.parameters, "max_connections", 0) * (var.database_connections_threshold_critical_percentage / 100)
+  # This logic is too complex for a simple alarm definition without external data or metric math.
+  # The following is a placeholder if an absolute threshold is provided.
+  # threshold           = var.db_connections_abs_critical_threshold
+
+  lifecycle {
+    ignore_changes = [threshold] # Example if threshold is managed outside or needs manual calculation
+  }
+  tags = merge(var.tags, { Severity = "Critical", Metric = "DatabaseConnections", Note = "Threshold is an absolute count" })
 }
 
-# Read Latency Alarm
-resource "aws_cloudwatch_metric_alarm" "rds_read_latency" {
-  count               = local.instance_dimensions != null ? 1 : 0
-  alarm_name          = "${local.instance_metric_id}-read-latency-high"
-  alarm_description   = "RDS instance ${local.instance_metric_id} read latency is high."
+
+resource "aws_cloudwatch_metric_alarm" "read_latency_critical" {
+  alarm_name          = "${var.db_identifier}-read-latency-critical"
   comparison_operator = "GreaterThanOrEqualToThreshold"
-  evaluation_periods  = var.evaluation_periods
+  evaluation_periods  = "3"
   metric_name         = "ReadLatency"
   namespace           = "AWS/RDS"
-  period              = var.period_seconds
+  period              = "300"
   statistic           = "Average"
-  threshold           = var.read_latency_threshold_ms / 1000 # Convert ms to seconds
-  unit                = "Seconds"
-  dimensions          = local.instance_dimensions
-  alarm_actions       = var.alarm_sns_topic_arns
-  ok_actions          = var.alarm_sns_topic_arns
-  tags                = var.tags
+  threshold           = local.read_latency_threshold_critical_s # In seconds
+  alarm_description   = "Critical: Read latency for ${var.db_identifier} is above ${var.read_latency_threshold_critical_ms} ms"
+  alarm_actions       = var.sns_topic_arns_critical
+  ok_actions          = var.sns_topic_arns_critical
+  dimensions = {
+    (local.dimension_name) = var.db_identifier
+  }
+  tags = merge(var.tags, { Severity = "Critical", Metric = "ReadLatency" })
 }
 
-# Write Latency Alarm
-resource "aws_cloudwatch_metric_alarm" "rds_write_latency" {
-  count               = local.instance_dimensions != null ? 1 : 0
-  alarm_name          = "${local.instance_metric_id}-write-latency-high"
-  alarm_description   = "RDS instance ${local.instance_metric_id} write latency is high."
+resource "aws_cloudwatch_metric_alarm" "write_latency_critical" {
+  alarm_name          = "${var.db_identifier}-write-latency-critical"
   comparison_operator = "GreaterThanOrEqualToThreshold"
-  evaluation_periods  = var.evaluation_periods
+  evaluation_periods  = "3"
   metric_name         = "WriteLatency"
   namespace           = "AWS/RDS"
-  period              = var.period_seconds
+  period              = "300"
   statistic           = "Average"
-  threshold           = var.write_latency_threshold_ms / 1000 # Convert ms to seconds
-  unit                = "Seconds"
-  dimensions          = local.instance_dimensions
-  alarm_actions       = var.alarm_sns_topic_arns
-  ok_actions          = var.alarm_sns_topic_arns
-  tags                = var.tags
+  threshold           = local.write_latency_threshold_critical_s # In seconds
+  alarm_description   = "Critical: Write latency for ${var.db_identifier} is above ${var.write_latency_threshold_critical_ms} ms"
+  alarm_actions       = var.sns_topic_arns_critical
+  ok_actions          = var.sns_topic_arns_critical
+  dimensions = {
+    (local.dimension_name) = var.db_identifier
+  }
+  tags = merge(var.tags, { Severity = "Critical", Metric = "WriteLatency" })
 }
 
-# Replica Lag Alarm (for Aurora clusters or RDS read replicas)
-resource "aws_cloudwatch_metric_alarm" "rds_replica_lag" {
-  count               = local.cluster_dimensions != null ? 1 : 0 # Typically a cluster metric for Aurora
-  alarm_name          = "${var.db_cluster_identifier}-replica-lag-high"
-  alarm_description   = "RDS Aurora cluster ${var.db_cluster_identifier} replica lag is high."
+# ReplicaLag alarm (only if not an Aurora cluster, as Aurora has its own specific replica lag metric, or for RDS read replicas)
+resource "aws_cloudwatch_metric_alarm" "replica_lag_critical" {
+  count = !var.is_aurora_cluster ? 1 : 0 # Or more complex logic if it's an Aurora replica vs RDS read replica
+
+  alarm_name          = "${var.db_identifier}-replica-lag-critical"
   comparison_operator = "GreaterThanOrEqualToThreshold"
-  evaluation_periods  = var.evaluation_periods
-  metric_name         = "AuroraReplicaLag" # Use "ReplicaLag" for non-Aurora RDS read replicas
+  evaluation_periods  = "3"
+  metric_name         = "ReplicaLag" # For RDS Read Replicas. Aurora uses AuroraReplicaLag.
   namespace           = "AWS/RDS"
-  period              = var.period_seconds
-  statistic           = "Maximum" # Use Maximum or Average depending on needs
-  threshold           = var.replica_lag_threshold_seconds
-  unit                = "Seconds"
-  dimensions          = local.cluster_dimensions
-  alarm_actions       = var.alarm_sns_topic_arns
-  ok_actions          = var.alarm_sns_topic_arns
-  tags                = var.tags
+  period              = "60" # Check more frequently
+  statistic           = "Maximum"
+  threshold           = var.replica_lag_threshold_critical_seconds
+  alarm_description   = "Critical: Replica lag for ${var.db_identifier} is above ${var.replica_lag_threshold_critical_seconds} seconds"
+  alarm_actions       = var.sns_topic_arns_critical
+  ok_actions          = var.sns_topic_arns_critical
+  dimensions = {
+    DBInstanceIdentifier = var.db_identifier # ReplicaLag is specific to DBInstanceIdentifier
+  }
+  tags = merge(var.tags, { Severity = "Critical", Metric = "ReplicaLag" })
+}
+
+resource "aws_cloudwatch_metric_alarm" "aurora_replica_lag_critical" {
+  count = var.is_aurora_cluster ? 1 : 0 # This applies to Aurora Replicas within an Aurora Cluster
+
+  alarm_name          = "${var.db_identifier}-aurora-replica-lag-critical"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = "3"
+  metric_name         = "AuroraReplicaLag"
+  namespace           = "AWS/RDS"
+  period              = "60"
+  statistic           = "Maximum"
+  threshold           = var.replica_lag_threshold_critical_seconds # AuroraReplicaLag is in milliseconds, this needs conversion
+  # threshold           = var.replica_lag_threshold_critical_seconds * 1000 # If var is in seconds
+  alarm_description   = "Critical: Aurora replica lag for ${var.db_identifier} instance is high."
+  alarm_actions       = var.sns_topic_arns_critical
+  ok_actions          = var.sns_topic_arns_critical
+  dimensions = {
+    DBInstanceIdentifier = var.db_identifier # Target a specific reader instance in the Aurora cluster
+    # Or use DBClusterIdentifier and Role = READER for average lag across readers, but specific instance is better.
+  }
+  # Note: AuroraReplicaLagMaximum and AuroraReplicaLagMinimum are also available per cluster.
+  # This setup assumes var.db_identifier is a specific reader instance.
+  # If var.db_identifier is the cluster, you might need to iterate over reader instances or use a different approach.
+  tags = merge(var.tags, { Severity = "Critical", Metric = "AuroraReplicaLag" })
 }

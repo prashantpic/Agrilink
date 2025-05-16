@@ -1,11 +1,20 @@
+# Description: Configures cluster-level alerting components like kube-state-metrics and node-exporter.
 # Purpose: Set up alerts for Kubernetes cluster health, resource utilization, and core component status.
-# LogicDescription: Deploys essential Kubernetes metrics exporters like 'kube-state-metrics' and 'node-exporter'.
-# These are typically scraped by a Prometheus instance (often deployed as part of a separate Prometheus stack).
-# REQ-17-006: Alerting Logic for cluster health
-# REQ-17-007: Alert Conditions for cluster health
+# Requirements: REQ-17-006, REQ-17-007
+
+variable "eks_cluster_name" {
+  description = "Name of the EKS cluster."
+  type        = string
+}
+
+variable "tags" {
+  description = "A map of tags to assign to the resources."
+  type        = map(string)
+  default     = {}
+}
 
 variable "deploy_kube_state_metrics" {
-  description = "Flag to deploy kube-state-metrics. Set to false if managed by another stack (e.g., kube-prometheus-stack)."
+  description = "Flag to deploy kube-state-metrics. Set to false if deployed by another stack (e.g., kube-prometheus-stack)."
   type        = bool
   default     = true
 }
@@ -13,17 +22,17 @@ variable "deploy_kube_state_metrics" {
 variable "kube_state_metrics_namespace" {
   description = "Namespace for kube-state-metrics."
   type        = string
-  default     = "kube-system"
+  default     = "kube-system" # Often deployed in kube-system or a dedicated monitoring namespace
 }
 
 variable "kube_state_metrics_helm_chart_version" {
   description = "Version of the kube-state-metrics Helm chart."
   type        = string
-  default     = "5.19.0" # Check https://github.com/kubernetes/kube-state-metrics/tree/main/charts/kube-state-metrics for latest
+  default     = "5.15.2" # Check for latest stable community chart version
 }
 
 variable "deploy_node_exporter" {
-  description = "Flag to deploy node-exporter. Set to false if managed by another stack (e.g., kube-prometheus-stack)."
+  description = "Flag to deploy node-exporter. Set to false if deployed by another stack (e.g., kube-prometheus-stack)."
   type        = bool
   default     = true
 }
@@ -31,92 +40,90 @@ variable "deploy_node_exporter" {
 variable "node_exporter_namespace" {
   description = "Namespace for node-exporter."
   type        = string
-  default     = "kube-system"
+  default     = "kube-system" # Often deployed in kube-system or a dedicated monitoring namespace
 }
 
 variable "node_exporter_helm_chart_version" {
-  description = "Version of the prometheus-node-exporter Helm chart."
+  description = "Version of the node-exporter Helm chart."
   type        = string
-  default     = "4.30.0" # Check https://github.com/prometheus-community/helm-charts for prometheus-node-exporter chart version
+  default     = "4.23.0" # Check for latest stable community chart version
 }
 
-variable "tags" {
-  description = "A map of tags to add to all resources."
-  type        = map(string)
-  default     = {}
-}
+# Note: The kube-prometheus-stack (deployed via modules/monitoring/prometheus_stack) typically includes
+# kube-state-metrics and node-exporter. This file provides them as standalone options
+# if a different Prometheus setup is used or if they need to be managed separately.
+# Alert rules themselves are primarily defined in the prometheus_stack module. This file focuses on metric exporters.
 
-# Kube State Metrics Deployment (via Helm)
+# Kube-State-Metrics Deployment
 resource "helm_release" "kube_state_metrics" {
   count      = var.deploy_kube_state_metrics ? 1 : 0
   name       = "kube-state-metrics"
-  repository = "https://kubernetes.github.io/kube-state-metrics"
+  repository = "https://prometheus-community.github.io/helm-charts"
   chart      = "kube-state-metrics"
   namespace  = var.kube_state_metrics_namespace
   version    = var.kube_state_metrics_helm_chart_version
 
-  # Default values are generally fine for kube-state-metrics.
-  # Adjust resources, replicaCount, etc. as needed.
-  # Example:
+  # Default values are usually sufficient for basic operation.
+  # Custom values can be added here if needed, e.g., resource requests/limits, node selectors.
   # values = [
   #   yamlencode({
-  #     replicas = 1
-  #     resources = {
-  #       requests = {
-  #         cpu    = "100m"
-  #         memory = "128Mi"
-  #       }
-  #       limits = {
-  #         cpu    = "200m"
-  #         memory = "256Mi"
-  #       }
+  #     rbac = {
+  #       create = true
   #     }
+  #     serviceAccount = {
+  #       create = true
+  #     }
+  #     # Ensure Prometheus Operator ServiceMonitor is created if that's your setup
+  #     # prometheus = {
+  #     #   monitor = {
+  #     #     enabled = true 
+  #     #     # namespace = "monitoring" # Namespace where Prometheus Operator is running
+  #     #   }
+  #     # }
   #   })
   # ]
+
+  # Ensure namespace exists if not kube-system (which always exists)
+  # depends_on = [kubernetes_namespace.monitoring] # Example if using a custom monitoring namespace
 }
 
-# Node Exporter Deployment (via Helm)
-# This deploys prometheus-community/prometheus-node-exporter
+# Node-Exporter Deployment
 resource "helm_release" "node_exporter" {
   count      = var.deploy_node_exporter ? 1 : 0
   name       = "node-exporter"
   repository = "https://prometheus-community.github.io/helm-charts"
-  chart      = "prometheus-node-exporter"
+  chart      = "prometheus-node-exporter" # Chart name in the prometheus-community repo
   namespace  = var.node_exporter_namespace
   version    = var.node_exporter_helm_chart_version
 
-  # Default values are generally fine for node-exporter.
-  # It runs as a DaemonSet.
-  # Ensure it has necessary host permissions (hostNetwork, hostPID, hostPath for /proc, /sys, /host/rootfs)
-  # The chart typically handles these.
-  # Example:
+  # Default values are usually sufficient. Node exporter runs as a DaemonSet.
+  # Custom values can be added here if needed.
   # values = [
   #   yamlencode({
-  #     resources = {
-  #       requests = {
-  #         cpu    = "50m"
-  #         memory = "64Mi"
-  #       }
-  #       limits = {
-  #         cpu    = "100m"
-  #         memory = "128Mi"
-  #       }
+  #     rbac = {
+  #       create = true
   #     }
-  #     # If you need to enable specific collectors:
-  #     # extraArgs = [
-  #     #   "--collector.filesystem.ignored-mount-points=^/(dev|proc|sys|var/lib/docker/.+|var/lib/kubelet/pods/.+)($|/)"
-  #     # ]
+  #     serviceAccount = {
+  #       create = true
+  #     }
+  #     # Ensure Prometheus Operator ServiceMonitor is created if that's your setup
+  #     # prometheus = {
+  #     #   monitor = {
+  #     #     enabled = true
+  #     #     # namespace = "monitoring" # Namespace where Prometheus Operator is running
+  #     #   }
+  #     # }
   #   })
   # ]
+  # depends_on = [kubernetes_namespace.monitoring] # Example
 }
 
-# Note: Foundational alert rules for cluster components (e.g., NodeNotReady, PodCrashLooping)
-# are typically defined as PrometheusRule CRs. These are better placed in the
-# `modules/monitoring/prometheus_stack/alert_rules.tf` file, assuming Prometheus Operator
-# is used from that stack. This file focuses on deploying the exporters.
-# If Prometheus is not used, or a different alerting mechanism is in place,
-# then alert definitions (e.g., CloudWatch Alarms based on EKS control plane logs/metrics)
-# might be considered here or in a dedicated CloudWatch alarms module.
+
+# RBAC for kube-state-metrics and node-exporter are typically handled by their respective Helm charts.
+# If deployed as part of a larger stack like kube-prometheus-stack, that chart manages their RBAC.
+# This file primarily ensures these components are deployed if not covered elsewhere.
+# The actual alert rules (e.g., NodeNotReady, PodCrashLooping) would be defined
+# in `modules/monitoring/prometheus_stack/alert_rules.tf` as PrometheusRule CRs.
 
 output "kube_state_metrics_deployed" {
   description = "Indicates if kube-state-metrics was deployed by this module."

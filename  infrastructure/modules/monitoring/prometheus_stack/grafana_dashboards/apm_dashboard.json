@@ -20,6 +20,7 @@
   "graphTooltip": 0,
   "id": null,
   "links": [],
+  "liveNow": false,
   "panels": [
     {
       "datasource": {
@@ -105,13 +106,13 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(rate(http_requests_total{job=~\"$job\", namespace=~\"$namespace\"}[$__rate_interval])) by (job, namespace)",
-          "legendFormat": "{{job}} - {{namespace}}",
+          "expr": "sum(rate(http_requests_total{job=~\"your-app-job.*\"}[5m])) by (service)",
+          "legendFormat": "{{service}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Request Rate (RPS)",
+      "title": "Request Rate per Service",
       "type": "timeseries"
     },
     {
@@ -139,7 +140,7 @@
               "viz": false
             },
             "lineInterpolation": "smooth",
-            "lineWidth": 1,
+            "lineWidth": 2,
             "pointSize": 5,
             "scaleDistribution": {
               "type": "linear"
@@ -198,13 +199,13 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(sum(rate(http_requests_total{job=~\"$job\", namespace=~\"$namespace\", code=~\"5..\"}[$__rate_interval])) by (job, namespace) / sum(rate(http_requests_total{job=~\"$job\", namespace=~\"$namespace\"}[$__rate_interval])) by (job, namespace)) * 100",
-          "legendFormat": "{{job}} - {{namespace}} (5xx)",
+          "expr": "sum(rate(http_requests_total{job=~\"your-app-job.*\", code=~\"5..\"}[5m])) by (service) / sum(rate(http_requests_total{job=~\"your-app-job.*\"}[5m])) by (service) * 100",
+          "legendFormat": "{{service}} 5xx %",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Error Rate (5xx %)",
+      "title": "HTTP 5xx Error Rate per Service",
       "type": "timeseries"
     },
     {
@@ -261,13 +262,13 @@
               }
             ]
           },
-          "unit": "s"
+          "unit": "ms"
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
-        "w": 12,
+        "h": 9,
+        "w": 24,
         "x": 0,
         "y": 8
       },
@@ -275,12 +276,12 @@
       "options": {
         "legend": {
           "calcs": [],
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
-          "mode": "single",
+          "mode": "multi",
           "sort": "none"
         }
       },
@@ -291,8 +292,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job=~\"$job\", namespace=~\"$namespace\"}[$__rate_interval])) by (le, job, namespace))",
-          "legendFormat": "p99 - {{job}} - {{namespace}}",
+          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job=~\"your-app-job.*\"}[5m])) by (le, service, handler)) * 1000",
+          "legendFormat": "{{service}} - {{handler}} p99",
           "range": true,
           "refId": "A"
         },
@@ -302,8 +303,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=~\"$job\", namespace=~\"$namespace\"}[$__rate_interval])) by (le, job, namespace))",
-          "legendFormat": "p95 - {{job}} - {{namespace}}",
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=~\"your-app-job.*\"}[5m])) by (le, service, handler)) * 1000",
+          "legendFormat": "{{service}} - {{handler}} p95",
           "range": true,
           "refId": "B"
         },
@@ -313,198 +314,59 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(rate(http_request_duration_seconds_sum{job=~\"$job\", namespace=~\"$namespace\"}[$__rate_interval])) by (job, namespace) / sum(rate(http_request_duration_seconds_count{job=~\"$job\", namespace=~\"$namespace\"}[$__rate_interval])) by (job, namespace)",
-          "legendFormat": "avg - {{job}} - {{namespace}}",
+          "expr": "sum(rate(http_request_duration_seconds_sum{job=~\"your-app-job.*\"}[5m])) by (service, handler) / sum(rate(http_request_duration_seconds_count{job=~\"your-app-job.*\"}[5m])) by (service, handler) * 1000",
+          "legendFormat": "{{service}} - {{handler}} avg",
+          "range": true,
           "refId": "C"
         }
       ],
-      "title": "Request Latency",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "opacity",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "percent"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 8
-      },
-      "id": 8,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=~\"$namespace\", pod=~\"$pod\", container!=\"POD\", image!=\"\"}[$__rate_interval])) by (pod, container, namespace) / sum(container_spec_cpu_quota{namespace=~\"$namespace\", pod=~\"$pod\", container!=\"POD\", image!=\"\"}/container_spec_cpu_period{namespace=~\"$namespace\", pod=~\"$pod\", container!=\"POD\", image!=\"\"}) by (pod, container, namespace) * 100",
-          "legendFormat": "{{namespace}}/{{pod}}/{{container}} CPU Usage",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum(container_memory_working_set_bytes{namespace=~\"$namespace\", pod=~\"$pod\", container!=\"POD\", image!=\"\"}) by (pod, container, namespace) / sum(container_spec_memory_limit_bytes{namespace=~\"$namespace\", pod=~\"$pod\", container!=\"POD\", image!=\"\"} > 0) by (pod, container, namespace) * 100",
-          "legendFormat": "{{namespace}}/{{pod}}/{{container}} Memory Usage",
-          "range": true,
-          "refId": "B"
-        }
-      ],
-      "title": "Container Resource Saturation (CPU/Memory % of Limit)",
+      "title": "Request Latency (p99, p95, avg) per Service/Handler",
       "type": "timeseries"
     }
   ],
   "refresh": "",
-  "schemaVersion": 39,
-  "tags": ["apm", "application", "monitoring"],
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["apm", "application", "prometheus"],
   "templating": {
     "list": [
       {
-        "current": {
-          "selected": false,
-          "text": "All",
-          "value": "$__all"
-        },
+        "current": {},
         "datasource": {
           "type": "prometheus",
           "uid": "prometheus"
         },
         "definition": "label_values(http_requests_total, job)",
         "hide": 0,
-        "includeAll": true,
-        "label": "Job",
-        "multi": true,
+        "includeAll": false,
+        "multi": false,
         "name": "job",
         "options": [],
         "query": {
           "query": "label_values(http_requests_total, job)",
-          "refId": "Prometheus-job-Variable"
+          "refId": "Prometheus_job_Variable"
         },
         "refresh": 1,
-        "regex": "",
+        "regex": "/your-app-job.*/",
         "skipUrlSync": false,
         "sort": 0,
         "type": "query"
       },
       {
-        "current": {
-          "selected": false,
-          "text": "All",
-          "value": "$__all"
-        },
+        "current": {},
         "datasource": {
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(http_requests_total{job=~\"$job\"}, namespace)",
+        "definition": "label_values(http_requests_total{job=~\"$job\"}, service)",
         "hide": 0,
         "includeAll": true,
-        "label": "Namespace",
         "multi": true,
-        "name": "namespace",
+        "name": "service",
         "options": [],
         "query": {
-          "query": "label_values(http_requests_total{job=~\"$job\"}, namespace)",
-          "refId": "Prometheus-namespace-Variable"
-        },
-        "refresh": 1,
-        "regex": "",
-        "skipUrlSync": false,
-        "sort": 0,
-        "type": "query"
-      },
-      {
-        "current": {
-          "selected": false,
-          "text": "All",
-          "value": "$__all"
-        },
-        "datasource": {
-          "type": "prometheus",
-          "uid": "prometheus"
-        },
-        "definition": "label_values(container_cpu_usage_seconds_total{namespace=~\"$namespace\"}, pod)",
-        "hide": 0,
-        "includeAll": true,
-        "label": "Pod",
-        "multi": true,
-        "name": "pod",
-        "options": [],
-        "query": {
-          "query": "label_values(container_cpu_usage_seconds_total{namespace=~\"$namespace\"}, pod)",
-          "refId": "StandardVariableQuery"
+          "query": "label_values(http_requests_total{job=~\"$job\"}, service)",
+          "refId": "Prometheus_service_Variable"
         },
         "refresh": 1,
         "regex": "",
@@ -520,8 +382,8 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "Application Performance Monitoring (APM)",
-  "uid": "apm-sample-dashboard",
-  "version": 3,
+  "title": "APM Dashboard (Application: YourApp)",
+  "uid": "apm-your-app",
+  "version": 1,
   "weekStart": ""
 }
