@@ -1,46 +1,45 @@
-# Root outputs typically aggregate or expose key information from the deployed environment.
-# The specific outputs available will depend on what the environment module (`module.selected_environment`) exports.
+# Root outputs aggregate key information from the deployed environment.
+# The actual values will depend on the outputs defined within each environment module.
 
-output "deployed_environment_name" {
-  description = "The name of the environment that was deployed."
-  value       = local.environment_name
+output "environment_name" {
+  description = "The name of the deployed environment."
+  value       = module.environment.environment_name
 }
 
-output "environment_vpc_id" {
-  description = "The VPC ID of the deployed environment."
-  value       = module.selected_environment.vpc_id
-  # Sensitive attribute, consider if this should be an output at the root level.
-  # This assumes the environment module outputs 'vpc_id'.
+output "vpc_id" {
+  description = "The ID of the VPC deployed in the environment."
+  value       = module.environment.vpc_id
+  sensitive   = false # VPC ID is generally not sensitive
 }
 
-output "environment_eks_cluster_name" {
-  description = "The EKS cluster name of the deployed environment."
-  value       = module.selected_environment.eks_cluster_name
-  # This assumes the environment module outputs 'eks_cluster_name'.
+output "eks_cluster_name" {
+  description = "The name of the EKS cluster deployed in the environment."
+  value       = module.environment.eks_cluster_name
+  sensitive   = false
 }
 
-output "environment_eks_cluster_endpoint" {
-  description = "The EKS cluster endpoint of the deployed environment."
-  value       = module.selected_environment.eks_cluster_endpoint
-  # Sensitive attribute, consider if this should be an output at the root level.
-  # This assumes the environment module outputs 'eks_cluster_endpoint'.
+output "eks_cluster_endpoint" {
+  description = "The endpoint for the EKS cluster deployed in the environment."
+  value       = module.environment.eks_cluster_endpoint
+  sensitive   = true # Endpoint can be considered sensitive
 }
 
-output "environment_rds_cluster_endpoint" {
-  description = "The RDS/Aurora cluster endpoint of the deployed environment."
-  value       = module.selected_environment.rds_cluster_endpoint
-  # Sensitive attribute, consider if this should be an output at the root level.
-  # This assumes the environment module outputs 'rds_cluster_endpoint'.
+output "rds_cluster_endpoint" {
+  description = "The endpoint for the RDS/Aurora cluster in the environment."
+  value       = module.environment.rds_cluster_endpoint
+  sensitive   = true
 }
 
-# Add other outputs as needed, ensuring they are exposed by the environment modules.
+output "rds_cluster_reader_endpoint" {
+  description = "The reader endpoint for the RDS/Aurora cluster in the environment."
+  value       = module.environment.rds_cluster_reader_endpoint
+  sensitive   = true
+}
+
+# Add other relevant outputs that might be needed globally,
+# ensuring they are exposed by the environment module.
 # Example:
-# output "environment_public_subnet_ids" {
-#   description = "List of public subnet IDs in the deployed environment."
-#   value       = module.selected_environment.public_subnet_ids
-# }
-#
-# output "environment_private_subnet_ids" {
-#   description = "List of private subnet IDs in the deployed environment."
-#   value       = module.selected_environment.private_subnet_ids
+# output "application_load_balancer_dns_name" {
+#   description = "DNS name of the application load balancer."
+#   value       = module.environment.alb_dns_name
 # }
