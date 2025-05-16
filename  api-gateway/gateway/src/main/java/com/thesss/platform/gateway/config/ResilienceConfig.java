@@ -1,103 +1,82 @@
 package com.thesss.platform.gateway.config;
 
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
-import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
-import io.github.resilience4j.core.registry.EntryAddedEvent;
-import io.github.resilience4j.core.registry.EntryRemovedEvent;
-import io.github.resilience4j.core.registry.EntryReplacedEvent;
-import io.github.resilience4j.core.registry.RegistryEventConsumer;
+import io.github.resilience4j.common.circuitbreaker.configuration.CircuitBreakerConfigCustomizer;
+import io.github.resilience4j.common.retry.configuration.RetryConfigCustomizer;
+import io.github.resilience4j.common.timelimiter.configuration.TimeLimiterConfigCustomizer;
 import io.github.resilience4j.retry.RetryConfig;
-import io.github.resilience4j.retry.RetryRegistry;
 import io.github.resilience4j.timelimiter.TimeLimiterConfig;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.cloud.circuitbreaker.resilience4j.ReactiveResilience4JCircuitBreakerFactory;
-import org.springframework.cloud.circuitbreaker.resilience4j.Resilience4JConfigBuilder;
+
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.cloud.client.circuitbreaker.Customizer;
 
 import java.time.Duration;
 
 @Configuration
 public class ResilienceConfig {
 
-    private static final Logger log = LoggerFactory.getLogger(ResilienceConfig.class);
-
     /**
-     * Example of a programmatic customizer for the ReactiveResilience4JCircuitBreakerFactory.
-     * This can be used to set default configurations for all circuit breakers
-     * or configure specific ones if not fully managed by application.yml.
-     * Property-based configuration in application.yml is generally preferred for simplicity.
+     * Provides default configurations for CircuitBreakers.
+     * These can be overridden by instance-specific configurations in application.yml.
+     * (e.g., resilience4j.circuitbreaker.instances.myBackend.slidingWindowSize=10)
      */
     @Bean
-    public Customizer<ReactiveResilience4JCircuitBreakerFactory> defaultCircuitBreakerCustomizer() {
-        return factory -> {
-            factory.configureDefault(id -> new Resilience4JConfigBuilder(id)
-                    .circuitBreakerConfig(CircuitBreakerConfig.custom()
-                            .slidingWindowSize(10)
-                            .failureRateThreshold(50.0f)
-                            .waitDurationInOpenState(Duration.ofSeconds(10))
-                            .permittedNumberOfCallsInHalfOpenState(3)
-                            .slowCallRateThreshold(50.0f)
-                            .slowCallDurationThreshold(Duration.ofSeconds(2))
-                            .build())
-                    .timeLimiterConfig(TimeLimiterConfig.custom()
-                            .timeoutDuration(Duration.ofSeconds(5))
-                            .build())
-                    .build());
-
-            // Example of configuring a specific circuit breaker instance
-            // factory.configure(builder -> builder.circuitBreakerConfig(CircuitBreakerConfig.ofDefaults())
-            // .timeLimiterConfig(TimeLimiterConfig.custom().timeoutDuration(Duration.ofSeconds(4)).build()), "mySpecificCircuitBreaker");
-        };
+    public CircuitBreakerConfigCustomizer defaultCircuitBreakerConfigCustomizer() {
+        return CircuitBreakerConfigCustomizer
+                .of("default", builder -> builder
+                        .failureRateThreshold(50) // If 50% of calls fail, open the circuit
+                        .slidingWindowSize(10) // Consider last 10 calls for failure rate
+                        .minimumNumberOfCalls(5) // Minimum calls before calculating failure rate
+                        .permittedNumberOfCallsInHalfOpenState(3) // Calls allowed when half-open
+                        .waitDurationInOpenState(Duration.ofSeconds(30)) // Time to wait before transitioning to half-open
+                        .automaticTransitionFromOpenToHalfOpenEnabled(true)
+                        .recordExceptions(Throwable.class) // Record all throwables
+                );
     }
 
     /**
-     * Example of customizing the RetryRegistry.
-     * This can be used to define default retry configurations.
+     * Provides default configurations for TimeLimiters.
      */
     @Bean
-    public Customizer<RetryRegistry> defaultRetryRegistryCustomizer() {
-        return registry -> {
-            RetryConfig defaultRetryConfig = RetryConfig.custom()
-                    .maxAttempts(3)
-                    .waitDuration(Duration.ofMillis(500))
-                    // Add more specific configurations if needed
-                    .build();
-            registry.addConfiguration("defaultRetryConfig", defaultRetryConfig);
-
-            // You can also add event consumers for logging or monitoring retries
-            registry.getEventPublisher().onEntryAdded(event -> log.info("Retry config added: {}", event.getAddedEntry().getName()));
-        };
+    public TimeLimiterConfigCustomizer defaultTimeLimiterConfigCustomizer() {
+        return TimeLimiterConfigCustomizer
+                .of("default", builder -> builder
+                        .timeoutDuration(Duration.ofSeconds(5)) // Default timeout for an operation
+                        .cancelRunningFuture(true)
+                );
     }
-
-
+    
+    /**
+     * Provides default configurations for Retries.
+     */
     @Bean
-    public RegistryEventConsumer<CircuitBreaker> circuitBreakerEventConsumer() {
-        return new RegistryEventConsumer<>() {
-            @Override
-            public void onEntryAddedEvent(EntryAddedEvent<CircuitBreaker> entryAddedEvent) {
-                log.info("CircuitBreaker registry: entry added {}", entryAddedEvent.getAddedEntry().getName());
-                entryAddedEvent.getAddedEntry().getEventPublisher()
-                    .onStateTransition(event ->
-                        log.warn("CircuitBreaker {} state changed from {} to {}",
-                                entryAddedEvent.getAddedEntry().getName(),
-                                event.getStateTransition().getFromState(),
-                                event.getStateTransition().getToState())
-                    );
-            }
-
-            @Override
-            public void onEntryRemovedEvent(EntryRemovedEvent<CircuitBreaker> entryRemoveEvent) {
-                log.info("CircuitBreaker registry: entry removed {}", entryRemoveEvent.getRemovedEntry().getName());
-            }
-
-            @Override
-            public void onEntryReplacedEvent(EntryReplacedEvent<CircuitBreaker> entryReplacedEvent) {
-                log.info("CircuitBreaker registry: entry replaced old:{}, new:{}",
-                    entryReplacedEvent.getOldEntry().getName(), entryReplacedEvent.getNewEntry().getName());
-            }
-        };
+    public RetryConfigCustomizer defaultRetryConfigCustomizer() {
+        return RetryConfigCustomizer
+                .of("default", builder -> builder
+                        .maxAttempts(3) // Default number of retry attempts
+                        .waitDuration(Duration.ofMillis(500)) // Default wait duration between retries
+                        .retryOnResult(response -> false) // Example: Don't retry on specific results
+                        .retryExceptions(java.io.IOException.class, java.util.concurrent.TimeoutException.class)
+                        .ignoreExceptions(javax.management.ServiceNotFoundException.class) // Example
+                        .failAfterMaxAttempts(true)
+                );
     }
+
+    // Example: Customizing a specific named circuit breaker instance if needed beyond YAML.
+    /*
+    @Bean
+    public CircuitBreakerConfigCustomizer specificServiceCircuitBreakerConfig() {
+        return CircuitBreakerConfigCustomizer
+            .of("mySpecificServiceCB", builder -> builder
+                .slidingWindowSize(20)
+                .failureRateThreshold(60));
+    }
+    */
+
+    // Bulkhead configuration is typically done in application.yml due to its instance-specific nature.
+    // resilience4j.bulkhead:
+    //   instances:
+    //     myBackendBulkhead:
+    //       maxConcurrentCalls: 10
+    //       maxWaitDuration: 10ms
 }

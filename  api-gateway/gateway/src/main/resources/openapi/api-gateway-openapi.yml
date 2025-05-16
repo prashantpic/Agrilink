@@ -1,21 +1,41 @@
 openapi: 3.0.3
 info:
-  title: The SSS Platform - API Gateway
+  title: The SSS Platform API Gateway
+  description: Serves as the single entry point for all client requests and public API consumers. Handles routing, authentication, authorization, rate limiting, and more.
   version: v1.0.0
-  description: >
-    This API Gateway serves as the single entry point for all client requests and public API consumers. 
-    It handles routing, authentication (JWT, API Key), authorization, rate limiting, resilience, logging, 
-    monitoring, and integrates with service discovery and external services like Consent Management.
   contact:
-    name: The SSS Platform Team
-    email: support@thesssplatform.com
+    name: API Support
+    url: https://thesss.platform/support
+    email: api-support@thesss.platform.com
 servers:
-  - url: http://localhost:8080 # Replace with actual gateway URL in deployments
-    description: Development server
-  - url: https://api.thesssplatform.com # Replace with actual production gateway URL
-    description: Production server
+  - url: https://api.thesss.platform.com
+    description: Production API Server
+  - url: http://localhost:8080 # Assuming gateway runs on 8080 locally
+    description: Local Development Server
 
 components:
+  securitySchemes:
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-KEY
+      description: API Key for application-level authentication.
+    oauth2Auth:
+      type: oauth2
+      description: OAuth2 JWT Bearer token for user or service authentication.
+      flows:
+        clientCredentials: # For M2M communication
+          tokenUrl: /auth/realms/thesss-platform/protocol/openid-connect/token # Example token URL
+          scopes:
+            internal_service: Access internal service resources
+        authorizationCode: # For user-delegated access
+          authorizationUrl: /auth/realms/thesss-platform/protocol/openid-connect/auth # Example auth URL
+          tokenUrl: /auth/realms/thesss-platform/protocol/openid-connect/token # Example token URL
+          scopes:
+            farmer_data:read: Read farmer specific data
+            farmer_data:write: Modify farmer specific data
+            profile:read: Read user profile
+
   schemas:
     ApiErrorResponse:
       type: object
@@ -23,264 +43,172 @@ components:
         timestamp:
           type: integer
           format: int64
-          description: The time the error occurred, as a Unix timestamp (milliseconds).
+          description: The time the error occurred in milliseconds since epoch.
         status:
           type: integer
-          description: The HTTP status code.
+          description: HTTP status code.
         error:
           type: string
-          description: A short, human-readable summary of the problem.
+          description: HTTP status error phrase (e.g., 'Not Found', 'Unauthorized').
         message:
           type: string
-          description: A human-readable explanation specific to this occurrence of the problem.
+          description: A human-readable description of the error.
         path:
           type: string
           description: The path of the request that resulted in an error.
-        correlationId:
-          type: string
-          description: A unique identifier for the request, used for tracing.
         errorCode:
           type: string
-          description: An application-specific error code. (Optional)
+          description: A service-specific error code (optional).
+          nullable: true
         details:
           type: array
           items:
             type: string
-          description: A list of more specific error messages or validation failures. (Optional)
+          description: A list of more specific error messages or validation failures (optional).
+          nullable: true
       required:
         - timestamp
         - status
         - error
         - message
         - path
-        - correlationId
 
-    FarmerData: # Example Schema, replace with actual
-      type: object
-      properties:
-        farmerId:
-          type: string
-          format: uuid
-        data:
-          type: object
-          additionalProperties: true
-
-  securitySchemes:
-    apiKeyAuth:
-      type: apiKey
-      in: header
-      name: X-API-KEY
-      description: API Key for client application authentication.
-    oauth2Auth: # For JWT Bearer token
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
-      description: OAuth 2.0 JWT Bearer token for user or service authentication.
+    # Placeholder schemas for request/response if needed for specific endpoints
+    # Example:
+    # StatisticsData:
+    #   type: object
+    #   properties:
+    #     metricName:
+    #       type: string
+    #     value:
+    #       type: number
 
 paths:
   /api/v1/statistics/agricultural/**:
     get:
       summary: Access Agricultural Statistics
-      description: Routes requests to the statistics service for agricultural data. (REQ-12-003)
+      description: Retrieve various agricultural statistics. The exact path and parameters depend on the statistics service.
       operationId: getAgriculturalStatistics
       tags:
         - Statistics
       security:
         - apiKeyAuth: []
-        - oauth2Auth: [] # Requires JWT with appropriate scopes
-      parameters:
-        - name: WildcardPath
-          in: path
-          required: true
-          description: The remainder of the path to be forwarded to the statistics service.
-          schema:
-            type: string
-          example: "crop-yields/2023"
+        - oauth2Auth: [internal_service] # Example scope
       responses:
         '200':
-          description: Successful retrieval of statistics data.
+          description: Successful retrieval of statistics.
           content:
             application/json:
               schema:
-                type: object # Define actual response schema from statistics service
+                type: object # Replace with actual response schema from statistics service
+                example: {"data": "some statistics data"}
         '400':
-          description: Bad Request
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiErrorResponse'
+          $ref: '#/components/schemas/ApiErrorResponse'
         '401':
-          description: Unauthorized (Invalid API Key or JWT)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiErrorResponse'
+          $ref: '#/components/schemas/ApiErrorResponse'
         '403':
-          description: Forbidden (Insufficient permissions)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiErrorResponse'
+          $ref: '#/components/schemas/ApiErrorResponse'
         '404':
-          description: Not Found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiErrorResponse'
+          $ref: '#/components/schemas/ApiErrorResponse'
         '500':
-          description: Internal Server Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiErrorResponse'
+          $ref: '#/components/schemas/ApiErrorResponse'
 
   /api/v1/knowledge-base/**:
     get:
       summary: Access Knowledge Base Content
-      description: Routes requests to the query management service for knowledge base articles and FAQs. (REQ-12-004)
+      description: Retrieve content from the knowledge base. The exact path and parameters depend on the query management service.
       operationId: getKnowledgeBaseContent
       tags:
         - Knowledge Base
       security:
         - apiKeyAuth: []
-        - oauth2Auth: []
-      parameters:
-        - name: WildcardPath
-          in: path
-          required: true
-          description: The remainder of the path to be forwarded to the query management service.
-          schema:
-            type: string
-          example: "articles/soil-preparation"
+        - oauth2Auth: [profile:read] # Example scope
       responses:
         '200':
           description: Successful retrieval of knowledge base content.
           content:
             application/json:
               schema:
-                type: object # Define actual response schema from query management service
+                type: object # Replace with actual response schema from query management service
+                example: {"articleId": "123", "title": "Best practices for crop rotation"}
         '400':
-          $ref: '#/components/responses/BadRequest'
+          $ref: '#/components/schemas/ApiErrorResponse'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/schemas/ApiErrorResponse'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/schemas/ApiErrorResponse'
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/schemas/ApiErrorResponse'
         '500':
-          $ref: '#/components/responses/InternalServerError'
+          $ref: '#/components/schemas/ApiErrorResponse'
 
   /api/v1/weather/**:
     get:
       summary: Access Weather Information
-      description: Routes requests to the weather service for forecasts and conditions. (REQ-12-005)
+      description: Retrieve weather information. The exact path and parameters depend on the weather service.
       operationId: getWeatherInformation
       tags:
         - Weather
       security:
         - apiKeyAuth: []
-      parameters:
-        - name: WildcardPath
-          in: path
-          required: true
-          description: The remainder of the path to be forwarded to the weather service.
-          schema:
-            type: string
-          example: "forecast?location=cityX"
+        # OAuth2 might not be needed if it's public weather data, or could be for specific user location weather
+        - oauth2Auth: [profile:read] # Example if user-specific weather
       responses:
         '200':
           description: Successful retrieval of weather information.
           content:
             application/json:
               schema:
-                type: object # Define actual response schema from weather service
+                type: object # Replace with actual response schema from weather service
+                example: {"temperature": "25C", "condition": "Sunny"}
         '400':
-          $ref: '#/components/responses/BadRequest'
+          $ref: '#/components/schemas/ApiErrorResponse'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/schemas/ApiErrorResponse'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/schemas/ApiErrorResponse'
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/schemas/ApiErrorResponse'
         '500':
-          $ref: '#/components/responses/InternalServerError'
+          $ref: '#/components/schemas/ApiErrorResponse'
 
-  /api/v1/farmer-data/{farmerId}/**:
+  /api/v1/farmer-data/{farmerId}/**: # Assuming a generic path structure beyond farmerId
     get:
       summary: Access Farmer Consented Data
-      description: Routes requests for farmer-specific data to the farmer service, requiring explicit farmer consent. (REQ-12-006)
-      operationId: getFarmerData
+      description: Retrieve specific data for a farmer, requiring explicit consent. The exact path and parameters depend on the farmer service.
+      operationId: getFarmerConsentedData
       tags:
         - Farmer Data
-      security:
-        - apiKeyAuth: [] # Third-party client API key
-        - oauth2Auth: [] # User/Service JWT, potentially with specific scopes like 'farmer_data:read'
       parameters:
         - name: farmerId
           in: path
           required: true
-          description: The unique identifier of the farmer.
+          description: The ID of the farmer.
           schema:
             type: string
-            format: uuid
-        - name: WildcardPath
-          in: path
-          required: true
-          description: The remainder of the path for specific farmer data to be forwarded to the farmer service.
-          schema:
-            type: string
-          example: "land-records"
+            format: uuid # Or appropriate format
+      security:
+        - apiKeyAuth: [] # API Key of the consuming application
+        - oauth2Auth: [farmer_data:read] # OAuth token with scope to read farmer data
       responses:
         '200':
           description: Successful retrieval of farmer consented data.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/FarmerData' # Example, replace with actual
+                type: object # Replace with actual response schema from farmer service
+                example: {"farmerDetails": "some data"}
         '400':
-          $ref: '#/components/responses/BadRequest'
+          $ref: '#/components/schemas/ApiErrorResponse'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/schemas/ApiErrorResponse'
         '403':
-          description: Forbidden (Consent not granted or insufficient permissions)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiErrorResponse'
+          $ref: '#/components/schemas/ApiErrorResponse'
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/schemas/ApiErrorResponse'
         '500':
-          $ref: '#/components/responses/InternalServerError'
+          $ref: '#/components/schemas/ApiErrorResponse'
 
-components: # Re-declaring for responses, can be merged with schemas and securitySchemes
-  responses:
-    BadRequest:
-      description: Bad Request
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ApiErrorResponse'
-    Unauthorized:
-      description: Unauthorized (Invalid API Key or JWT)
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ApiErrorResponse'
-    Forbidden:
-      description: Forbidden (Insufficient permissions or access denied by policy)
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ApiErrorResponse'
-    NotFound:
-      description: Resource Not Found
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ApiErrorResponse'
-    InternalServerError:
-      description: Internal Server Error
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ApiErrorResponse'
+security:
+  - apiKeyAuth: []
+  - oauth2Auth: []
