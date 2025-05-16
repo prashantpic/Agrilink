@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Base Logback configuration for structured JSON logging.
+  Services can import or adapt this configuration.
+-->
+<configuration scan="true" scanPeriod="60 seconds">
+
+    <!-- Define the default JSON encoder -->
+    <appender name="STDOUT_JSON" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+            <providers>
+                <timestamp>
+                    <fieldName>timestamp</fieldName>
+                    <timeZone>UTC</timeZone>
+                </timestamp>
+                <loggerName>
+                    <fieldName>loggerName</fieldName>
+                    <shortenedLoggerNameLength>30</shortenedLoggerNameLength>
+                </loggerName>
+                <threadName>
+                    <fieldName>threadName</fieldName>
+                </threadName>
+                <logLevel>
+                    <fieldName>level</fieldName>
+                </logLevel>
+                <message>
+                    <fieldName>message</fieldName>
+                </message>
+                <stackTrace>
+                    <fieldName>stackTrace</fieldName>
+                    <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+                        <maxDepthPerThrowable>30</maxDepthPerThrowable>
+                        <maxLength>2048</maxLength>
+                        <shortenedClassNameLength>20</shortenedClassNameLength>
+                        <rootCauseFirst>true</rootCauseFirst>
+                    </throwableConverter>
+                </stackTrace>
+                <mdc/> <!-- Includes all MDC data by default (correlationId, userId, tenantId etc.) -->
+                <!-- Add custom fields if needed -->
+                <!-- <customFields>
+                    {"application_name":"${spring.application.name:-unknown-app}"}
+                </customFields> -->
+            </providers>
+        </encoder>
+    </appender>
+
+    <!-- Specific appender for audit logs -->
+    <appender name="AUDIT_FILE_JSON" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${logging.file.path:-logs}/audit/audit.json</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <!-- daily rollover -->
+            <fileNamePattern>${logging.file.path:-logs}/audit/audit-%d{yyyy-MM-dd}.%i.json.gz</fileNamePattern>
+            <timeBasedFileNamingAndTriggeringPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedFNATP">
+                <!-- or whenever the file size reaches 100MB -->
+                <maxFileSize>100MB</maxFileSize>
+            </timeBasedFileNamingAndTriggeringPolicy>
+            <!-- keep 30 days' worth of history -->
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+        </rollingPolicy>
+         <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+             <providers>
+                 <!-- Audit events are typically self-contained JSONs logged as a message. -->
+                 <!-- So, we primarily need the message (which will be the JSON audit event) -->
+                 <!-- and perhaps a timestamp if not part of the message itself, but AuditEvent DTO has one. -->
+                 <timestamp>
+                     <fieldName>logTimestamp</fieldName> <!-- To differentiate from event's own timestamp -->
+                     <timeZone>UTC</timeZone>
+                 </timestamp>
+                 <message>
+                     <fieldName>auditEvent</fieldName> <!-- The message will contain the JSON AuditEvent -->
+                 </message>
+                 <!-- MDC might still be useful for context like correlationId if not in the auditEvent DTO itself -->
+                 <mdc/>
+             </providers>
+         </encoder>
+    </appender>
+
+
+    <!-- Root logger (console output for standard application logs) -->
+    <root level="INFO">
+        <appender-ref ref="STDOUT_JSON"/>
+    </root>
+
+    <!-- Specific logger for audit events, using the name "AUDIT" -->
+    <logger name="AUDIT" level="INFO" additivity="false">
+        <!-- Log audit events to a separate file -->
+        <appender-ref ref="AUDIT_FILE_JSON"/>
+        <!-- Optionally, also send audit logs to stdout if needed for development/debugging -->
+        <!-- <appender-ref ref="STDOUT_JSON"/> -->
+    </logger>
+
+    <!-- Example: Configure logging levels for specific packages/classes -->
+    <!-- <logger name="com.thesss.platform" level="DEBUG"/> -->
+    <logger name="org.springframework" level="WARN"/>
+    <logger name="org.hibernate" level="WARN"/>
+    <logger name="io.jsonwebtoken" level="INFO"/>
+
+</configuration>

@@ -1,0 +1,11 @@
+# This file is processed by Spring Boot during auto-configuration discovery.
+# It lists all @Configuration classes that should be considered for auto-configuration.
+# Each line should contain the fully qualified name of an auto-configuration class.
+
+com.thesss.platform.common.config.CommonAuditAutoConfiguration
+com.thesss.platform.common.config.CommonExceptionHandlingAutoConfiguration
+com.thesss.platform.common.config.CommonLoggingAutoConfiguration
+com.thesss.platform.common.config.CommonMapperAutoConfiguration
+com.thesss.platform.common.config.CommonSecurityAutoConfiguration
+com.thesss.platform.common.config.CommonWebClientCustomizerAutoConfiguration
+com.thesss.platform.common.config.CommonMetricsAutoConfiguration
