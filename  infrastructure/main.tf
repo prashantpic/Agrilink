@@ -1,32 +1,38 @@
 terraform {
+  # Backend configuration for the root module.
+  # This state file primarily manages the orchestration of environments.
+  # Specific S3 bucket and DynamoDB table should be created beforehand.
   backend "s3" {
-    # This backend configuration will be dynamically populated by CI/CD pipeline
-    # or a terraform init command with -backend-config arguments.
+    # Variables for bucket, key, region, and dynamodb_table will be typically
+    # passed via CLI '-backend-config' arguments or a backend configuration file.
     # Example:
-    # bucket         = "your-terraform-root-state-bucket-name"
-    # key            = "global/root.tfstate"
-    # region         = "your-aws-region"
-    # dynamodb_table = "your-terraform-root-lock-table"
+    # bucket         = "my-terraform-root-state-bucket"
+    # key            = "global/root/terraform.tfstate"
+    # region         = "us-east-1"
+    # dynamodb_table = "my-terraform-root-lock-table"
     # encrypt        = true
   }
 }
 
-# This main.tf orchestrates the deployment of specific environments.
-# It uses the current Terraform workspace to determine which environment
-# configuration to apply from the 'environments/' directory.
+# This local variable helps select the environment configuration to deploy.
+# It defaults to the current workspace name.
+locals {
+  environment = terraform.workspace == "default" ? "dev" : terraform.workspace # Default to 'dev' if workspace is 'default'
+  # You can add more sophisticated logic here to map workspaces to environment names if needed.
+}
 
-# Ensure workspaces like 'dev', 'staging', 'prod' exist and correspond
-# to directories in 'environments/'.
+# Module to deploy the selected environment.
+# The source path points to the specific environment's configuration directory.
+module "environment_deployment" {
+  source = "./environments/${local.environment}"
 
-module "environment" {
-  source = "./environments/${terraform.workspace}"
+  # Pass common variables from the root configuration to the environment module.
+  aws_region        = var.aws_region
+  project_name      = var.project_name
+  organization_name = var.organization_name
+  default_tags      = var.default_tags
 
-  # Pass root-level variables to the environment module
-  aws_region         = var.aws_region
-  project_name       = var.project_name
-  organization_name  = var.organization_name
-  default_tags       = var.default_tags
-  environment_name   = terraform.workspace
-
-  # Add other common variables to be passed to all environments if needed
+  # Add any other common variables that environment modules might expect.
+  # For example:
+  # global_billing_tag = var.global_billing_tag
 }

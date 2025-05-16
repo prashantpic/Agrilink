@@ -1,45 +1,39 @@
-# Root outputs aggregate key information from the deployed environment.
-# The actual values will depend on the outputs defined within each environment module.
-
-output "environment_name" {
-  description = "The name of the deployed environment."
-  value       = module.environment.environment_name
+# This output reflects the environment that was deployed by the root module.
+output "deployed_environment" {
+  description = "The name of the environment that was deployed."
+  value       = module.environment_deployment.environment_name # Assuming environment module outputs its name
 }
 
-output "vpc_id" {
-  description = "The ID of the VPC deployed in the environment."
-  value       = module.environment.vpc_id
+# Example: Aggregate or pass through key outputs from the deployed environment.
+# The actual available outputs will depend on what each environment module exposes.
+
+output "environment_vpc_id" {
+  description = "The VPC ID of the deployed environment."
+  value       = try(module.environment_deployment.vpc_id, null)
   sensitive   = false # VPC ID is generally not sensitive
 }
 
-output "eks_cluster_name" {
-  description = "The name of the EKS cluster deployed in the environment."
-  value       = module.environment.eks_cluster_name
+output "environment_eks_cluster_name" {
+  description = "The EKS cluster name of the deployed environment."
+  value       = try(module.environment_deployment.eks_cluster_name, null)
   sensitive   = false
 }
 
-output "eks_cluster_endpoint" {
-  description = "The endpoint for the EKS cluster deployed in the environment."
-  value       = module.environment.eks_cluster_endpoint
-  sensitive   = true # Endpoint can be considered sensitive
+output "environment_eks_cluster_endpoint" {
+  description = "The EKS cluster endpoint of the deployed environment."
+  value       = try(module.environment_deployment.eks_cluster_endpoint, null)
+  sensitive   = true # Endpoint might be considered sensitive
 }
 
-output "rds_cluster_endpoint" {
-  description = "The endpoint for the RDS/Aurora cluster in the environment."
-  value       = module.environment.rds_cluster_endpoint
+output "environment_rds_cluster_endpoint" {
+  description = "The RDS/Aurora cluster endpoint of the deployed environment."
+  value       = try(module.environment_deployment.rds_cluster_endpoint, null)
   sensitive   = true
 }
 
-output "rds_cluster_reader_endpoint" {
-  description = "The reader endpoint for the RDS/Aurora cluster in the environment."
-  value       = module.environment.rds_cluster_reader_endpoint
-  sensitive   = true
-}
-
-# Add other relevant outputs that might be needed globally,
-# ensuring they are exposed by the environment module.
-# Example:
-# output "application_load_balancer_dns_name" {
-#   description = "DNS name of the application load balancer."
-#   value       = module.environment.alb_dns_name
+# Add other outputs as needed, ensuring they are defined in the environment modules.
+# For example:
+# output "environment_s3_bucket_app_data_arn" {
+#   description = "ARN of the application data S3 bucket in the deployed environment."
+#   value       = try(module.environment_deployment.s3_bucket_app_data_arn, null)
 # }
