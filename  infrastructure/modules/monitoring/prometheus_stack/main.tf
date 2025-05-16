@@ -2,199 +2,114 @@
 # LogicDescription: Deploys Prometheus for metrics collection and storage, Alertmanager for handling alerts,
 # and Grafana for visualization. This is typically achieved by deploying the kube-prometheus-stack Helm chart.
 # Configures persistent storage for Prometheus and Grafana, service discovery mechanisms, and basic Alertmanager routing.
-# ImplementedFeatures: Prometheus Deployment, Alertmanager Deployment, Grafana Deployment,
-# Persistent Storage Configuration, Service Discovery for Prometheus.
-# RequirementIds: REQ-17-005, REQ-17-006
+# Requirements: REQ-17-005, REQ-17-006
 
-# Assumes Kubernetes and Helm providers are configured in the calling environment.
-# The Kubernetes provider should be configured to point to the EKS cluster created by the eks_cluster module.
-
-locals {
-  chart_version = var.prometheus_stack_chart_version
-  release_name  = "${var.project_name}-${var.environment}-prom-stack"
-  namespace     = var.namespace
-  tags          = var.tags
+terraform {
+  required_providers {
+    helm = {
+      source  = "hashicorp/helm"
+      version = ">= 2.5"
+    }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = ">= 2.10"
+    }
+  }
 }
+
+# Assumes Kubernetes and Helm providers are configured by the caller (e.g., environment configuration)
+# that has access to the EKS cluster details.
+
+# Example provider configuration (would be in the calling module/environment):
+# provider "kubernetes" {
+#   host                   = module.eks_cluster.cluster_endpoint
+#   cluster_ca_certificate = base64decode(module.eks_cluster.cluster_certificate_authority_data)
+#   token                  = data.aws_eks_cluster_auth.main.token
+# }
+# provider "helm" {
+#   kubernetes {
+#     host                   = module.eks_cluster.cluster_endpoint
+#     cluster_ca_certificate = base64decode(module.eks_cluster.cluster_certificate_authority_data)
+#     token                  = data.aws_eks_cluster_auth.main.token
+#   }
+# }
 
 resource "kubernetes_namespace" "monitoring" {
   count = var.create_namespace ? 1 : 0
   metadata {
-    name = local.namespace
+    name = var.namespace
     labels = merge(
-      local.tags,
+      var.common_labels,
       {
-        "name" = local.namespace
+        "app.kubernetes.io/managed-by" = "Terraform"
       }
     )
   }
 }
 
 resource "helm_release" "kube_prometheus_stack" {
-  name       = local.release_name
-  repository = var.prometheus_stack_helm_repo
-  chart      = "kube-prometheus-stack"
-  version    = local.chart_version
-  namespace  = local.namespace
+  name       = var.release_name
+  repository = var.helm_repository_url
+  chart      = var.helm_chart_name
+  version    = var.helm_chart_version
+  namespace  = var.namespace
 
-  # REQ-17-005: Deploy Prometheus, Alertmanager, Grafana
-  # REQ-17-006: Deploy Alertmanager for handling alerts
-  values = [
-    yamlencode({
-      # Global settings
-      global = {
-        # Common labels for all resources
-        commonLabels = local.tags
-      }
+  values = [yamlencode(var.helm_values)]
 
-      # Prometheus configuration
-      prometheus = {
-        enabled = true
-        prometheusSpec = {
-          # Resource requests and limits
-          resources = var.prometheus_resources
-          # Persistent storage configuration
-          storageSpec = {
-            volumeClaimTemplate = {
-              spec = {
-                accessModes = [var.prometheus_pvc_access_modes]
-                resources = {
-                  requests = {
-                    storage = var.prometheus_pvc_storage_size
-                  }
-                }
-                storageClassName = var.prometheus_pvc_storage_class_name # Ensure this StorageClass exists
-              }
-            }
-          }
-          # How long to retain metrics
-          retention = var.prometheus_retention_period
-          # Service Monitor and Pod Monitor selectors
-          serviceMonitorSelectorNilUsesHelmValues = false
-          podMonitorSelectorNilUsesHelmValues     = false
-          ruleSelectorNilUsesHelmValues           = false
+  # Set dynamic values if needed, e.g.
+  # set {
+  #   name  = "prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues"
+  #   value = "false" # Example, refer to chart documentation
+  # }
+  # set {
+  #   name = "alertmanager.config.global.sns_api_url" # Example if using SNS receiver for Alertmanager
+  #   value = var.alertmanager_sns_api_url # e.g., http://localhost:9095 for alertmanager-sns-forwarder
+  # }
+  # set {
+  #   name = "grafana.persistence.enabled"
+  #   value = var.grafana_persistence_enabled
+  # }
+  # set {
+  #   name = "grafana.persistence.storageClassName"
+  #   value = var.grafana_storage_class_name # e.g. "gp2" or custom SC
+  # }
+  # set {
+  #   name = "prometheus.prometheusSpec.storageSpec.volumeClaimTemplate.spec.storageClassName"
+  #   value = var.prometheus_storage_class_name # e.g. "gp2" or custom SC
+  # }
 
-          # Additional scrape configs can be added here or via PrometheusRule CRDs
-          # additionalScrapeConfigs = [] 
-        }
-      }
+  dynamic "set" {
+    for_each = var.helm_set_values
+    content {
+      name  = set.key
+      value = set.value
+    }
+  }
 
-      # Alertmanager configuration
-      alertmanager = {
-        enabled = true
-        alertmanagerSpec = {
-          resources = var.alertmanager_resources
-          storage = { # Persistent storage for Alertmanager state
-            volumeClaimTemplate = {
-              spec = {
-                accessModes = [var.alertmanager_pvc_access_modes]
-                resources = {
-                  requests = {
-                    storage = var.alertmanager_pvc_storage_size
-                  }
-                }
-                storageClassName = var.alertmanager_pvc_storage_class_name # Ensure this StorageClass exists
-              }
-            }
-          }
-        }
-        # Basic Alertmanager configuration (receivers, routes)
-        # More complex configs can be managed via a ConfigMap or the AlertmanagerConfig CRD
-        config = {
-          global = {
-            resolve_timeout = "5m"
-            # Example: Point to an SNS topic via a webhook or an AWS SNS receiver
-            # This typically involves a separate Alertmanager receiver like `prometheus-alertmanager-sns-forwarder`
-            # or a custom Lambda function. For simplicity, showing a webhook example.
-            # This will be further configured by `alert_rules.tf` potentially setting up `PrometheusRule` CRDs.
-            # And SNS topics from `sns_topics` module will be the ultimate destination.
-          }
-          route = {
-            group_by = ["job", "alertname", "severity"]
-            receiver = var.default_alertmanager_receiver_name # e.g., "default-receiver"
-            routes   = var.alertmanager_routes # More specific routes can be added here
-          }
-          receivers = [
-            {
-              name = var.default_alertmanager_receiver_name
-              # Example webhook configuration - replace with actual integration
-              # webhook_configs = [{
-              #   url = "http://<alert-processor-service>.<namespace>.svc.cluster.local:9099/alerts"
-              #   send_resolved = true
-              # }]
-              # Example: If using an SNS receiver deployment.
-              # This setup depends on the `sns_topics` module output (topic ARN) and an sns integration method
-              # e.g. using https://github.com/prometheus-community/alertmanager-sns-receiver
-              # or a custom webhook to lambda to SNS.
-            }
-            # Add more receivers as needed based on var.alertmanager_additional_receivers
-          ]
-          # templates = [] # For custom notification templates
-        }
-      }
+  dynamic "set_sensitive" {
+    for_each = var.helm_set_sensitive_values
+    content {
+      name  = set_sensitive.key
+      value = set_sensitive.value
+    }
+  }
 
-      # Grafana configuration
-      grafana = {
-        enabled = true
-        adminPassword = var.grafana_admin_password # Consider fetching from Secrets Manager
-        resources = var.grafana_resources
-        persistence = {
-          enabled = true
-          type    = "pvc"
-          size    = var.grafana_pvc_storage_size
-          accessModes = [var.grafana_pvc_access_modes]
-          storageClassName = var.grafana_pvc_storage_class_name # Ensure this StorageClass exists
-        }
-        # For Grafana dashboards, they can be provisioned via ConfigMaps
-        # dashboards.default.enabled: true (or custom providers)
-        # sidecar.dashboards.enabled: true
-        # sidecar.dashboards.searchNamespace: "ALL"
-        # See grafana_dashboards/apm_dashboard.json for an example dashboard definition
-        # that would be mounted via a ConfigMap.
-        # This helm chart can automatically pick up dashboards from ConfigMaps with specific labels.
-        # Or define dashboardsProvider.
-        # Example:
-        # dashboardsConfigMaps:
-        #   my-dashboards: "my-dashboards-configmap-name"
-      }
-
-      # Kube-state-metrics configuration
-      kubeStateMetrics = {
-        enabled = true # REQ-17-005 (part of metrics collection)
-        # resources = {} # Configure if needed
-      }
-
-      # Node-exporter configuration
-      nodeExporter = {
-        enabled = true # REQ-17-005 (part of metrics collection)
-        # resources = {} # Configure if needed
-      }
-      
-      # Prometheus Operator specific configurations
-      prometheusOperator = {
-        # resources = {} # Configure if needed
-      }
-
-      # Default rules provided by the chart (can be disabled if managing all rules externally)
-      defaultRules = {
-        create = true
-        # rules = {} # To disable specific default rules
-      }
-
-      # Any additional custom values
-      # customValues = var.additional_helm_values
-    }),
-    # Merging additional values provided by the user
-    var.additional_helm_values_yaml != "" ? var.additional_helm_values_yaml : ""
-  ]
-
-  atomic = true # If set, the installation process purges chart on failure.
-  # timeout = 300 # Timeout in seconds for the operation.
+  atomic          = var.atomic_deployment
+  cleanup_on_fail = var.cleanup_on_fail
+  timeout         = var.timeout_seconds
+  wait            = var.wait_for_resources
 
   depends_on = [
     kubernetes_namespace.monitoring,
-    # Potentially depends on storage classes being available if not using default
+    # Potentially depends on IAM roles for service accounts if IRSA is used by Prometheus components
+    # e.g., for Prometheus remote write to AWS Managed Prometheus or CloudWatch
   ]
 
-  # Set specific provider if multiple Kubernetes providers are configured
-  # provider = kubernetes.eks_cluster # Example
+  # REQ-17-005: Metrics collection (Prometheus) and Visualization (Grafana)
+  # REQ-17-006: Alerting logic (Prometheus rules, Alertmanager)
 }
+
+# Note: Alert rules are often defined as PrometheusRule CRDs.
+# These can be included in the helm_values or deployed separately using kubernetes_manifest
+# or files in a directory (via kubectl_manifest data source and kubernetes_manifest resource).
+# See alert_rules.tf if it's part of this module for specific rule definitions.

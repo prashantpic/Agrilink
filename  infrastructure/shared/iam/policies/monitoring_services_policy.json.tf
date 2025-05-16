@@ -1,108 +1,122 @@
-# Purpose: Grant necessary permissions for monitoring agents/services
-# (like CloudWatch agent, Prometheus EKS service accounts) to collect metrics and logs.
-# LogicDescription: Defines permissions using 'aws_iam_policy_document' for actions
-# such as 'cloudwatch:PutMetricData', 'logs:CreateLogStream', 'logs:PutLogEvents',
-# 'ec2:DescribeInstances' (for discovery), and other permissions required by
-# specific monitoring tools running on EC2 or EKS.
-# ImplementedFeatures: CloudWatch Metrics/Logs Publishing Policy, EC2/EKS Discovery for Monitoring
-# RequirementIds: REQ-17-005
+# Purpose: Grant necessary permissions for monitoring agents/services to collect metrics and logs.
+# LogicDescription: Defines permissions using 'aws_iam_policy_document' for actions such as
+# 'cloudwatch:PutMetricData', 'logs:CreateLogStream', 'logs:PutLogEvents', 'ec2:DescribeInstances', etc.
+# Requirement: REQ-17-005
 
-# This data source defines an IAM policy document for monitoring services.
-# It may require variables for specific resource targeting if not using wildcards.
-# For REQ-17-005, this policy will be used by agents/services.
+# This policy is a general template. Specific permissions might need adjustment based on
+# the exact monitoring tools and their requirements (e.g., Prometheus Node Exporter, CloudWatch Agent, OpenTelemetry Collector).
 
-data "aws_iam_policy_document" "monitoring_services_policy" {
-  # Permissions for CloudWatch Agent / general metric and log publishing
-  statement {
-    sid    = "CloudWatchMetricsLogsPublish"
-    effect = "Allow"
-    actions = [
-      "cloudwatch:PutMetricData",
-      "logs:CreateLogGroup", # If agent needs to create log groups
-      "logs:CreateLogStream",
-      "logs:PutLogEvents",
-      "logs:DescribeLogStreams"
-    ]
-    resources = ["*"] # CloudWatch actions are typically region-wide, not resource-specific for creation/put
-  }
-
-  # Permissions for EC2 instance discovery (e.g., by CloudWatch agent or Prometheus node_exporter sidecar)
-  statement {
-    sid    = "EC2Discovery"
-    effect = "Allow"
-    actions = [
-      "ec2:DescribeInstances",
-      "ec2:DescribeTags" # Often needed to filter instances
-    ]
-    resources = ["*"] # Describe actions are global or regional, not resource-specific
-  }
-  
-  # Permissions for AutoScaling group discovery (if monitoring relies on ASG info)
-  statement {
-    sid    = "AutoScalingDiscovery"
-    effect = "Allow"
-    actions = [
-      "autoscaling:DescribeAutoScalingGroups",
-      "autoscaling:DescribeAutoScalingInstances"
-    ]
-    resources = ["*"]
-  }
-
-  # Permissions for EKS discovery (e.g., Prometheus operator scraping EKS components)
-  # These are typically Kubernetes RBAC permissions, but if an AWS SDK is used for EKS discovery:
-  statement {
-    sid    = "EKSDiscovery"
-    effect = "Allow"
-    actions = [
-      "eks:DescribeCluster" # Allows getting cluster details like OIDC provider URL
-      # "eks:ListNodegroups",
-      # "eks:DescribeNodegroup"
-    ]
-    # Typically on specific cluster ARN or "*" if role is very specific
-    resources = var.eks_cluster_arns_for_monitoring # Variable: list of EKS cluster ARNs
-  }
-
-  # Permissions for AWS X-Ray (if used for APM traces)
-  # statement {
-  #   sid    = "XRayAccess"
-  #   effect = "Allow"
-  #   actions = [
-  #     "xray:PutTraceSegments",
-  #     "xray:PutTelemetryRecords",
-  #     "xray:GetSamplingRules",
-  #     "xray:GetSamplingTargets",
-  #     "xray:GetSamplingStatisticSummaries"
-  #   ]
-  #   resources = ["*"]
-  # }
-
-  # Permissions for Prometheus Remote Write to AWS Managed Prometheus (AMP)
-  # statement {
-  #   sid    = "PrometheusRemoteWriteToAMP"
-  #   effect = "Allow"
-  #   actions = [
-  #     "aps:RemoteWrite",
-  #     "aps:GetSeries",
-  #     "aps:GetLabels",
-  #     "aps:GetMetricMetadata"
-  #   ]
-  #   resources = [var.amp_workspace_arn] # Variable: ARN of the AMP workspace
-  # }
+variable "allow_cloudwatch_metrics_publish" {
+  description = "Allow publishing metrics to CloudWatch."
+  type        = bool
+  default     = true
 }
 
-# To use this:
-#
-# variable "eks_cluster_arns_for_monitoring" {
-#   description = "List of EKS cluster ARNs that monitoring services can describe."
-#   type        = list(string)
-#   default     = ["*"] # Or provide specific ARNs
-# }
-#
-# data "aws_iam_policy_document" "monitoring_services_policy" {
-#   # ... content from above ...
-# }
-#
-# resource "aws_iam_policy" "my_monitoring_policy" {
-#   name   = "my-monitoring-services-policy"
-#   policy = data.aws_iam_policy_document.monitoring_services_policy.json
-# }
+variable "allow_cloudwatch_logs_publish" {
+  description = "Allow publishing logs to CloudWatch Logs."
+  type        = bool
+  default     = true
+}
+
+variable "allow_ec2_describe" {
+  description = "Allow describing EC2 instances (for discovery)."
+  type        = bool
+  default     = true
+}
+
+variable "allow_eks_describe" {
+  description = "Allow describing EKS cluster (for discovery by EKS monitoring tools)."
+  type        = bool
+  default     = false # Enable if specific EKS monitoring tools need it for IRSA
+}
+
+variable "eks_cluster_arn_for_describe" {
+  description = "Specific EKS cluster ARN if allow_eks_describe is true."
+  type        = string
+  default     = null
+}
+
+variable "additional_iam_statements" {
+  description = "A list of additional IAM statement objects to include in the policy."
+  type        = list(any) # list of objects matching IAM statement structure
+  default     = []
+}
+
+data "aws_iam_policy_document" "monitoring_services_policy" {
+  dynamic "statement" {
+    for_each = var.allow_cloudwatch_metrics_publish ? [1] : []
+    content {
+      sid    = "AllowCloudWatchPutMetricData"
+      effect = "Allow"
+      actions = [
+        "cloudwatch:PutMetricData"
+      ]
+      resources = ["*"] # PutMetricData does not support resource-level permissions for custom metrics
+    }
+  }
+
+  dynamic "statement" {
+    for_each = var.allow_cloudwatch_logs_publish ? [1] : []
+    content {
+      sid    = "AllowCloudWatchLogs"
+      effect = "Allow"
+      actions = [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogStreams"
+      ]
+      resources = ["arn:aws:logs:*:*:*"] # Or restrict to specific log group prefixes
+    }
+  }
+
+  dynamic "statement" {
+    for_each = var.allow_ec2_describe ? [1] : []
+    content {
+      sid    = "AllowEC2Describe"
+      effect = "Allow"
+      actions = [
+        "ec2:DescribeInstances",
+        "ec2:DescribeTags", # Often needed with DescribeInstances for filtering/enrichment
+        "autoscaling:DescribeAutoScalingGroups" # For ASG discovery
+      ]
+      resources = ["*"] # Describe actions are typically global or region-wide
+    }
+  }
+
+  dynamic "statement" {
+    for_each = var.allow_eks_describe && var.eks_cluster_arn_for_describe != null ? [1] : []
+    content {
+      sid    = "AllowEKSDescribe"
+      effect = "Allow"
+      actions = [
+        "eks:DescribeCluster"
+        # Add other EKS permissions if needed, e.g., eks:ListNodegroups
+      ]
+      resources = [var.eks_cluster_arn_for_describe]
+    }
+  }
+
+  dynamic "statement" {
+    for_each = var.additional_iam_statements
+    content {
+      sid       = lookup(statement.value, "sid", null)
+      effect    = lookup(statement.value, "effect", "Allow")
+      actions   = lookup(statement.value, "actions", [])
+      resources = lookup(statement.value, "resources", [])
+      dynamic "condition" {
+        for_each = lookup(statement.value, "condition", [])
+        content {
+          test     = condition.value.test
+          variable = condition.value.variable
+          values   = condition.value.values
+        }
+      }
+    }
+  }
+}
+
+output "policy_json" {
+  description = "The IAM policy document JSON for monitoring services."
+  value       = data.aws_iam_policy_document.monitoring_services_policy.json
+}
