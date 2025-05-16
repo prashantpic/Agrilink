@@ -1,0 +1,148 @@
+spring:
+  application:
+    name: crop-service
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/crop_db}
+    username: ${SPRING_DATASOURCE_USERNAME:crop_user}
+    password: ${SPRING_DATASOURCE_PASSWORD:crop_password}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update # In development/testing. Use 'validate' or 'none' in production with Flyway/Liquibase.
+    show-sql: ${SPRING_JPA_SHOW_SQL:false}
+    properties:
+      hibernate:
+        format_sql: ${SPRING_JPA_FORMAT_SQL:false}
+        dialect: org.hibernate.dialect.PostgreSQLDialect # Standard PG dialect, or org.hibernate.spatial.dialect.postgresql.PostgisDialect if JTS types are directly in CropService entities
+  # Spring Statemachine configuration placeholder
+  statemachine:
+    state-machine-iid-key: cropCycleBusinessId # Key used for persisting state machine instance ID, matching CropCycle.cropCycleId.value
+    # default-context-events: false # Consider if events should be published to ApplicationContext by default
+
+server:
+  port: ${PORT:8082} # Default port for the service
+
+logging:
+  level:
+    root: INFO
+    com.thesss.platform.crop: DEBUG
+    org.springframework.web: INFO
+    org.springframework.security: INFO # For security related logs
+    org.hibernate.SQL: DEBUG # To see SQL statements
+    org.hibernate.type.descriptor.sql: TRACE # To see SQL parameters
+
+feign:
+  client:
+    config:
+      default:
+        connectTimeout: 5000 # milliseconds
+        readTimeout: 10000 # milliseconds
+        loggerLevel: basic # Default feign logger level
+  # Circuit breaker for Feign clients
+  circuitbreaker:
+    enabled: true
+
+# External service URLs
+services:
+  farmer-service:
+    url: ${FARMER_SERVICE_URL:http://localhost:8080} # Replace with actual URL or service discovery name
+  land-service:
+    url: ${LAND_SERVICE_URL:http://localhost:8081}   # Replace with actual URL or service discovery name
+  masterdata-service:
+    url: ${MASTERDATA_SERVICE_URL:http://localhost:8083} # Replace with actual URL or service discovery name
+
+# Micrometer Metrics Configuration
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics,beans,env,configprops,mappings,loggers,threaddump,conditions
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+      sla:
+        http.server.requests: 50ms, 100ms, 200ms, 500ms, 1s
+    export:
+      prometheus:
+        enabled: true # Enable Prometheus endpoint
+
+# Resilience4j Circuit Breaker Configuration
+resilience4j:
+  circuitbreaker:
+    instances:
+      farmerService:
+        registerHealthIndicator: true
+        slidingWindowType: COUNT_BASED
+        slidingWindowSize: 20
+        failureRateThreshold: 50
+        waitDurationInOpenState: 10s # 10 seconds
+        permittedNumberOfCallsInHalfOpenState: 5
+        minimumNumberOfCalls: 10
+      landService:
+        registerHealthIndicator: true
+        slidingWindowType: COUNT_BASED
+        slidingWindowSize: 20
+        failureRateThreshold: 50
+        waitDurationInOpenState: 10s
+        permittedNumberOfCallsInHalfOpenState: 5
+        minimumNumberOfCalls: 10
+      masterdataService:
+        registerHealthIndicator: true
+        slidingWindowType: COUNT_BASED
+        slidingWindowSize: 20
+        failureRateThreshold: 50
+        waitDurationInOpenState: 10s
+        permittedNumberOfCallsInHalfOpenState: 5
+        minimumNumberOfCalls: 10
+  retry:
+    instances:
+      farmerService:
+        maxAttempts: 3
+        waitDuration: 2s # 2 seconds
+      landService:
+        maxAttempts: 3
+        waitDuration: 2s
+      masterdataService:
+        maxAttempts: 3
+        waitDuration: 2s
+  # TimeLimiter configuration can be added if needed
+
+# Security Configurations (Placeholders for inter-service communication)
+# This assumes client credentials grant type for service-to-service calls
+spring.security.oauth2.client:
+  provider:
+    keycloak: # Example provider name
+      issuer-uri: ${OAUTH2_ISSUER_URI:http://localhost:9080/realms/your-realm} # Keycloak or other IdP issuer URI
+      token-uri: ${OAUTH2_TOKEN_URI:http://localhost:9080/realms/your-realm/protocol/openid-connect/token}
+  registration:
+    farmer-service-client:
+      provider: keycloak
+      client-id: ${FARMER_SERVICE_OAUTH2_CLIENT_ID:crop-service}
+      client-secret: ${FARMER_SERVICE_OAUTH2_CLIENT_SECRET:secret}
+      authorization-grant-type: client_credentials
+      scope: internal # Example scope for farmer service
+    land-service-client:
+      provider: keycloak
+      client-id: ${LAND_SERVICE_OAUTH2_CLIENT_ID:crop-service}
+      client-secret: ${LAND_SERVICE_OAUTH2_CLIENT_SECRET:secret}
+      authorization-grant-type: client_credentials
+      scope: internal # Example scope for land service
+    masterdata-service-client:
+      provider: keycloak
+      client-id: ${MASTERDATA_SERVICE_OAUTH2_CLIENT_ID:crop-service}
+      client-secret: ${MASTERDATA_SERVICE_OAUTH2_CLIENT_SECRET:secret}
+      authorization-grant-type: client_credentials
+      scope: internal # Example scope for masterdata service
+
+# Feature Flags (Example)
+feature-flags:
+  enableYieldPredictionMlIntegration: false
+  enableAdvancedInputValidation: true
+
+# Resource Server configuration (if this service exposes secured APIs)
+# spring.security.oauth2.resourceserver.jwt.issuer-uri: ${OAUTH2_ISSUER_URI}
+# This would require spring-boot-starter-oauth2-resource-server dependency.
+# For now, assuming it's an internal service called via API Gateway which handles external auth.
