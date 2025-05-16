@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <!-- Include Spring Boot's base logging configurations -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <springProperty scope="context" name="APP_NAME" source="spring.application.name" defaultValue="service-discovery"/>
+    <springProperty scope="context" name="LOG_PATH" source="logging.file.path" defaultValue="logs"/>
+    <springProperty scope="context" name="LOG_FILE" source="logging.file.name" defaultValue="${APP_NAME}"/>
+
+    <!-- Console Appender -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <!-- REQ-17-005: Include traceId and spanId for APM correlation -->
+            <!-- Pattern from SDS: %d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %highlight(%-5level) %cyan(%logger{50}.%M) - trace=%X{traceId:-}, span=%X{spanId:-} - %msg%n -->
+            <!-- Using a slightly modified pattern for better readability and standard Spring Boot defaults compatibility -->
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%15.15thread] %highlight(%-5level) %cyan(%-40.40logger{39}) %yellow(%M) : traceID=%X{traceId:-} spanID=%X{spanId:-} : %msg%n%throwable</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Optional: File Appender with Rolling Policy -->
+    <!--
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_PATH}/${LOG_FILE}.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_PATH}/${LOG_FILE}.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxHistory>30</maxHistory> Time to keep archived logs
+            <totalSizeCap>1GB</totalSizeCap> Total size of all archive files
+            <timeBasedFileNamingAndTriggeringPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedFNATP">
+                <maxFileSize>100MB</maxFileSize> Max size of each log file
+            </timeBasedFileNamingAndTriggeringPolicy>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [${APP_NAME},%X{traceId:-},%X{spanId:-}] [%thread] %-5level %logger{36}.%M - %msg%n</pattern>
+        </encoder>
+    </appender>
+    -->
+
+    <!-- Root Logger Configuration -->
+    <root level="INFO"> <!-- Default log level, can be overridden by application.yml -->
+        <appender-ref ref="CONSOLE"/>
+        <!-- <appender-ref ref="FILE"/> --> <!-- Uncomment to enable file logging -->
+    </root>
+
+    <!-- Specific Logger Configurations (can also be set in application.yml) -->
+    <!-- These levels will be applied if not overridden by more specific properties -->
+    <logger name="com.thesss.platform.discovery" level="INFO" additivity="false">
+        <appender-ref ref="CONSOLE"/>
+        <!-- <appender-ref ref="FILE"/> -->
+    </logger>
+
+    <logger name="com.netflix.eureka" level="WARN" additivity="false">
+        <appender-ref ref="CONSOLE"/>
+        <!-- <appender-ref ref="FILE"/> -->
+    </logger>
+    <logger name="com.netflix.discovery" level="WARN" additivity="false"> <!-- Eureka client part -->
+        <appender-ref ref="CONSOLE"/>
+        <!-- <appender-ref ref="FILE"/> -->
+    </logger>
+    <logger name="org.springframework.cloud.netflix.eureka" level="WARN" additivity="false">
+        <appender-ref ref="CONSOLE"/>
+        <!-- <appender-ref ref="FILE"/> -->
+    </logger>
+
+    <logger name="org.springframework.web" level="INFO" additivity="false">
+        <appender-ref ref="CONSOLE"/>
+        <!-- <appender-ref ref="FILE"/> -->
+    </logger>
+    <logger name="org.springframework.security" level="INFO" additivity="false"> <!-- For when security is added -->
+        <appender-ref ref="CONSOLE"/>
+        <!-- <appender-ref ref="FILE"/> -->
+    </logger>
+    <logger name="org.springframework.boot.actuate" level="INFO" additivity="false">
+        <appender-ref ref="CONSOLE"/>
+        <!-- <appender-ref ref="FILE"/> -->
+    </logger>
+
+    <!-- To reduce chattiness from Spring Cloud Config client during startup if needed -->
+    <logger name="org.springframework.cloud.config.client" level="INFO" additivity="false">
+        <appender-ref ref="CONSOLE"/>
+    </logger>
+
+</configuration>

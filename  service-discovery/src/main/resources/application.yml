@@ -1,0 +1,75 @@
+# Server configuration
+server:
+  port: 8761
+
+# Spring application configuration
+spring:
+  application:
+    name: service-discovery # Default application name, will be overridden by bootstrap.yml if present
+
+# Eureka server specific configuration
+eureka:
+  instance:
+    hostname: localhost # Default hostname, should be overridden in production by environment specific value
+    # prefer-ip-address: true # Set to true if services should register with their IP address
+  server:
+    enable-self-preservation: true # Recommended for production to prevent mass de-registrations during network partitions
+    eviction-interval-timer-in-ms: 60000 # Frequency of expired instance eviction (e.g., 60 seconds)
+    wait-time-in-ms-when-sync-empty: 5000 # How long to wait before serving requests if the registry is empty on startup
+    # response-cache-update-interval-ms: 30000 # How often to update the response cache
+    # peer-eureka-nodes-update-interval-ms: 600000 # Interval to update eureka nodes from DNS
+  client:
+    register-with-eureka: false # A standalone Eureka server does not register itself as a client
+    fetch-registry: false # A standalone Eureka server does not fetch registry from peers
+    service-url:
+      defaultZone: http://${eureka.instance.hostname}:${server.port}/eureka/ # For standalone, points to itself. For peering, list of peers.
+
+# Spring Boot Actuator configuration
+management:
+  endpoints:
+    web:
+      base-path: /actuator # Base path for all actuator endpoints
+      exposure:
+        include: health,info,metrics,prometheus,env,loggers,httpexchanges # Expose specific actuator endpoints
+  endpoint:
+    health:
+      show-details: when_authorized # Show full health details when authorized (requires Spring Security)
+      # roles: ADMIN # Example: restrict health details to users with ADMIN role (requires Spring Security)
+    # httpexchanges:
+    #   recording-capacity: 1000 # Number of recent HTTP exchanges to record
+  # APM: Metrics Configuration (REQ-17-005)
+  prometheus:
+    metrics:
+      export:
+        enabled: true # Enable Prometheus metrics export endpoint (/actuator/prometheus)
+  metrics:
+    tags:
+      application: ${spring.application.name} # Add application tag to all metrics
+  # APM: Tracing Configuration (REQ-17-005)
+  tracing:
+    sampling:
+      probability: 1.0 # Sample 100% of traces. Adjust for production (e.g., 0.1 for 10%)
+  zipkin: # Assuming Brave with Zipkin exporter, as per SDS
+    tracing:
+      endpoint: http://localhost:9411/api/v2/spans # URL of the Zipkin server. Replace with actual URL.
+
+# Logging configuration
+logging:
+  level:
+    root: INFO
+    com.thesss.platform.discovery: INFO
+    com.netflix.discovery: WARN # For Eureka client part if any interaction happens
+    com.netflix.eureka: WARN # For Eureka server core
+    org.springframework.cloud.netflix.eureka: WARN # For Spring Cloud's Eureka integration
+    org.springframework.web: INFO
+    org.springframework.boot.actuate: INFO
+    org.springframework.security: INFO # Useful when Spring Security is added
+
+# If Spring Security is active, default user for basic auth on Actuator/Eureka dashboard
+# These should be externalized via Spring Cloud Config for production
+# spring:
+#  security:
+#    user:
+#      name: user # Default username, fetch from Config Server
+#      password: "{noop}password" # Default password, fetch from Config Server and use encoded
+#      roles: USER

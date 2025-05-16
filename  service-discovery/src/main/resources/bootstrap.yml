@@ -1,0 +1,22 @@
+# Spring Cloud Bootstrap Configuration
+# This file is loaded before application.yml and is primarily used for
+# configuring properties that are needed early in the application lifecycle,
+# such as connecting to a configuration server.
+
+spring:
+  application:
+    name: service-discovery # This name will be used to fetch configuration from the Config Server
+  cloud:
+    config:
+      uri: http://localhost:8888 # URI of the Spring Cloud Config Server. Replace with actual URI.
+      fail-fast: true # Application startup will fail if it cannot connect to the Config Server. Recommended for most environments.
+      # retry: # Optional retry mechanism for connecting to config server
+      #  initial-interval: 1000
+      #  max-interval: 2000
+      #  max-attempts: 6
+      # profile: ${SPRING_PROFILES_ACTIVE:default} # Optional: specify profile for config server
+      # label: main # Optional: specify git branch if config server uses git backend
+
+# REQ-17-005 related: Externalized configuration can include APM settings,
+# ensuring that sensitive details like exporter endpoints or API keys are not hardcoded.
+# For example, management.zipkin.tracing.endpoint could be fetched from the Config Server.
