@@ -1,0 +1,29 @@
+<configuration>
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="ASYNC_CONSOLE" class="ch.qos.logback.classic.AsyncAppender">
+        <appender-ref ref="CONSOLE"/>
+        <queueSize>512</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <neverBlock>true</neverBlock>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="ASYNC_CONSOLE"/>
+    </root>
+
+    <logger name="com.thesss.platform.aggregators" level="DEBUG" additivity="false">
+        <appender-ref ref="ASYNC_CONSOLE"/>
+    </logger>
+
+    <logger name="org.springframework" level="INFO"/>
+    <logger name="org.springframework.kafka" level="INFO"/>
+    <logger name="org.apache.kafka" level="WARN"/>
+    <logger name="io.r2dbc.postgresql" level="INFO"/>
+    <logger name="io.netty" level="INFO"/>
+
+</configuration>
