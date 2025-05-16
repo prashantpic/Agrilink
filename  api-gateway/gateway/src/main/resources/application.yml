@@ -1,0 +1,304 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+  codec:
+    max-in-memory-size: 10MB # Default is 256KB, increase if large payloads are expected
+
+  # Service Discovery (Eureka)
+  cloud:
+    gateway:
+      discovery:
+        locator:
+          enabled: true # Enables looking up services via Eureka by serviceId
+          lower-case-service-id: true
+      default-filters:
+        - StripPrefix=2 # Strips /api/v1 for downstream services
+        - name: Retry
+          args:
+            retries: 3
+            series: SERVER_ERROR # Retry for 5xx errors
+            methods: GET,POST # Retry for GET and POST methods
+            exceptions:
+              - java.io.IOException
+              - java.util.concurrent.TimeoutException
+        - name: RequestRateLimiter # Default rate limiter
+          args:
+            redis-rate-limiter:
+              replenishRate: 10 # Tokens per second
+              burstCapacity: 20 # Max requests in a burst
+              requestedTokens: 1
+            key-resolver: "#{@remoteAddrKeyResolver}" # Default to IP based, can be overridden per route
+      routes:
+        - id: statistics-service-route
+          uri: lb://statistics-service
+          predicates:
+            - Path=/api/v1/statistics/**
+            - Method=GET,POST,PUT,DELETE
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: statisticsServiceCircuitBreaker
+                fallbackUri: forward:/fallback/statistics
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 50
+                redis-rate-limiter.burstCapacity: 100
+                key-resolver: "#{@apiKeyOrPrincipalKeyResolver}" # Specific key resolver for this route
+
+        - id: query-management-service-route
+          uri: lb://query-management-service
+          predicates:
+            - Path=/api/v1/knowledge-base/**
+            - Method=GET,POST
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: queryManagementServiceCircuitBreaker
+                fallbackUri: forward:/fallback/knowledgebase
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 50
+                redis-rate-limiter.burstCapacity: 100
+                key-resolver: "#{@apiKeyOrPrincipalKeyResolver}"
+
+        - id: weather-service-route
+          uri: lb://weather-service
+          predicates:
+            - Path=/api/v1/weather/**
+            - Method=GET
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: weatherServiceCircuitBreaker
+                fallbackUri: forward:/fallback/weather
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 20
+                redis-rate-limiter.burstCapacity: 40
+                key-resolver: "#{@remoteAddrKeyResolver}" # Example: IP based for public weather API
+
+        - id: farmer-service-route
+          uri: lb://farmer-service
+          predicates:
+            - Path=/api/v1/farmer-data/{farmerId}/**
+            - Method=GET,POST,PUT
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: farmerServiceCircuitBreaker
+                fallbackUri: forward:/fallback/farmerdata
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 30
+                redis-rate-limiter.burstCapacity: 60
+                key-resolver: "#{@apiKeyOrPrincipalKeyResolver}"
+            # ConsentCheckFilter would be applied programmatically for this route in GatewayRouteConfig.java
+            # as per SDS, especially if feature-flag driven.
+
+        # Route for OpenAPI documentation (if SecurityConfig permits /v3/api-docs/**)
+        - id: openapi-docs-route
+          uri: http://localhost:${server.port} # Route to self
+          predicates:
+            - Path=/v3/api-docs/**
+          filters:
+            - StripPrefix=0 # No prefix stripping for local forwarding
+
+    # Redis configuration (for Rate Limiter and potentially session management)
+  data:
+    redis:
+      host: ${REDIS_HOST_FOR_RATELIMITER:localhost}
+      port: ${REDIS_PORT_FOR_RATELIMITER:6379}
+      # password: ${REDIS_PASSWORD:} # Uncomment if Redis requires password
+      # timeout: 60s # Connection timeout
+      # lettuce:
+      #   pool:
+      #     max-active: 8
+      #     max-idle: 8
+      #     min-idle: 0
+
+  # Spring Security OAuth2 Resource Server (JWT Validation)
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${JWT_ISSUER_URI:http://localhost:9080/realms/sss-platform} # Replace with actual Auth Server Issuer URI
+          jwk-set-uri: ${JWT_JWK_SET_URI:${spring.security.oauth2.resourceserver.jwt.issuer-uri}/protocol/openid-connect/certs} # Standard OIDC JWKS endpoint
+
+# Eureka Client Configuration
+eureka:
+  client:
+    serviceUrl:
+      defaultZone: ${EUREKA_CLIENT_SERVICEURL_DEFAULTZONE:http://localhost:8761/eureka/}
+    fetch-registry: true
+    register-with-eureka: true
+    healthcheck:
+      enabled: true
+  instance:
+    prefer-ip-address: true
+    instance-id: ${spring.application.name}:${spring.application.instance_id:${random.value}}
+    lease-renewal-interval-in-seconds: 10 # Default 30
+    lease-expiration-duration-in-seconds: 30 # Default 90
+
+# Resilience4j Configuration
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        registerHealthIndicator: true
+        slidingWindowType: COUNT_BASED
+        slidingWindowSize: 20 # Number of requests in a closed state before calculating failure rate
+        minimumNumberOfCalls: 10 # Min calls before CB calculates error rate
+        permittedNumberOfCallsInHalfOpenState: 3
+        automaticTransitionFromOpenToHalfOpenEnabled: true
+        waitDurationInOpenState: 5s # Time CB stays open before transitioning to half-open
+        failureRateThreshold: 50 # Percentage
+        eventConsumerBufferSize: 10
+        recordExceptions:
+          - java.io.IOException
+          - java.util.concurrent.TimeoutException
+          - org.springframework.web.server.ResponseStatusException # For 5xx errors
+    instances:
+      statisticsServiceCircuitBreaker:
+        baseConfig: default
+        slidingWindowSize: 30
+        failureRateThreshold: 60
+      queryManagementServiceCircuitBreaker:
+        baseConfig: default
+        failureRateThreshold: 40
+      weatherServiceCircuitBreaker:
+        baseConfig: default
+        waitDurationInOpenState: 10s
+      farmerServiceCircuitBreaker:
+        baseConfig: default
+        minimumNumberOfCalls: 15
+  retry:
+    configs:
+      default:
+        maxAttempts: 3
+        waitDuration: 500ms # Wait 500ms between retries
+        retryExceptions:
+          - java.io.IOException
+          - java.util.concurrent.TimeoutException
+        ignoreExceptions:
+          - com.thesss.platform.gateway.exception.BusinessValidationException # Example: Don't retry on specific business exceptions
+    instances:
+      statisticsServiceRetry:
+        baseConfig: default
+        maxAttempts: 2
+      queryManagementServiceRetry:
+        baseConfig: default
+        waitDuration: 1s
+  timelimiter:
+    configs:
+      default:
+        timeoutDuration: 2s
+        cancelRunningFuture: true
+    instances:
+      defaultTimeLimiter:
+        timeoutDuration: 3s
+
+# Springdoc OpenAPI Configuration
+springdoc:
+  api-docs:
+    path: /v3/api-docs # Path for OpenAPI spec JSON/YAML
+    enabled: true
+  swagger-ui:
+    path: /swagger-ui.html # Path for Swagger UI
+    enabled: true
+    display-request-duration: true
+    groups-as-tags: true
+  paths-to-match: /api/v1/** # Default paths to include in documentation
+  group-configs:
+    - group: 'public-api-v1'
+      paths-to-match: '/api/v1/**'
+      packages-to-scan: 'com.thesss.platform.gateway.routes' # If using Spring Cloud Gateway functional routes for docs
+      # Or use `paths-to-exclude` if needed
+  default-consumes-media-type: application/json
+  default-produces-media-type: application/json
+  # Define global security schemes if api-gateway-openapi.yml is not used or for UI convenience
+  # security-schemes:
+  #   apiKeyAuth:
+  #     type: apiKey
+  #     in: header
+  #     name: X-API-KEY
+  #   oauth2Auth:
+  #     type: oauth2
+  #     flows:
+  #       implicit: # or clientCredentials, authorizationCode
+  #         authorizationUrl: ${spring.security.oauth2.resourceserver.jwt.issuer-uri}/protocol/openid-connect/auth
+  #         scopes:
+  #           openid: OpenID Connect scope
+  #           profile: User profile
+  #           email: User email
+  # Remove above security-schemes if openapi/api-gateway-openapi.yml defines them
+
+# Management & Actuator Endpoints
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,gateway,metrics,env,configprops,loggers # Expose relevant actuators
+  endpoint:
+    health:
+      show-details: when_authorized # Or 'always' for more details
+      probes:
+        enabled: true # For K8s liveness/readiness
+    gateway:
+      enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true # Enable histograms for response time percentiles
+
+# Logging Configuration
+logging:
+  level:
+    root: INFO
+    com.thesss.platform.gateway: DEBUG # More verbose for application code
+    org.springframework.cloud.gateway: INFO # Gateway routing details
+    org.springframework.security: INFO # Security related logs
+    reactor.netty.http.client: INFO # Netty client logs
+    io.lettuce.core: INFO # Redis client logs
+  # Pattern for console logging if not using JSON encoder or for simple local dev
+  # pattern:
+  #   console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+  # For structured logging, refer to logback-spring.xml
+
+# Custom Feature Toggles
+platform:
+  feature-toggles:
+    enable-consent-filter-for-farmer-data-api: ${ENABLE_CONSENT_FILTER_FOR_FARMER_DATA_API:true}
+    enable-detailed-request-logging-body: ${ENABLE_DETAILED_REQUEST_LOGGING_BODY:false}
+    use-remote-auth-service-for-api-keys: ${USE_REMOTE_AUTH_SERVICE_FOR_API_KEYS:true}
+
+# Custom Properties for Filters/Services (if not from Config Server)
+api:
+  key:
+    header-name: ${API_KEY_HEADER_NAME:X-API-KEY}
+  services:
+    consent:
+      base-url: ${CONSENT_SERVICE_BASE_URL:http://consent-service/api/v1/consents} # Example if using service discovery lb://consent-service
+    auth:
+      base-url: ${AUTH_SERVICE_BASE_URL:http://auth-service/api/v1/auth} # Example lb://auth-service
+
+# To enable RequestRateLimiter, a KeyResolver bean is needed. Example placeholders used above.
+# Define beans like:
+# @Bean
+# KeyResolver remoteAddrKeyResolver() { return exchange -> Mono.just(exchange.getRequest().getRemoteAddress().getAddress().getHostAddress()); }
+# @Bean
+# KeyResolver apiKeyOrPrincipalKeyResolver() { /* custom logic */ }
+
+# If specific Redis instance for RateLimiter (different from general Spring Data Redis)
+# spring:
+#   cloud:
+#     gateway:
+#       redis-rate-limiter:
+#         config:
+#           # host: separate-redis-host.com # if needed
+#           # port: 6380
+#           # database: 1

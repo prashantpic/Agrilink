@@ -1,0 +1,23 @@
+spring:
+  application:
+    name: api-gateway
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:default} # Active Spring profiles, comma-separated (e.g., default,dev,prod)
+  cloud:
+    config:
+      uri: ${SPRING_CLOUD_CONFIG_URI:http://localhost:8888} # URI of the Spring Cloud Config Server
+      fail-fast: true # Fail application startup if Config Server is not reachable
+      retry:
+        initial-interval: 1000 # Initial retry interval in ms
+        max-interval: 2000   # Max retry interval in ms
+        multiplier: 1.1      # Multiplier for next interval
+        max-attempts: 20     # Max number of retry attempts
+      # If Config Server requires authentication
+      # username: ${CONFIG_SERVER_USER:}
+      # password: ${CONFIG_SERVER_PASSWORD:}
+      # name: ${spring.application.name} # Explicitly set if different from spring.application.name
+      # profile: ${spring.profiles.active} # Explicitly set if different from spring.profiles.active
+      # label: ${GIT_BRANCH:main} # If using Git backend for Config Server, specifies the branch
+
+# Enable/disable config client explicitly (default is true if spring-cloud-starter-config is on classpath)
+# spring.cloud.config.enabled: true
