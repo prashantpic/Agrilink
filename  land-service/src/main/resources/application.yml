@@ -1,0 +1,135 @@
+```yaml
+server:
+  port: 8082 # Port for the land-service
+
+spring:
+  application:
+    name: land-service
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/land_db # Replace with actual DB URL
+    username: land_user # Replace with actual username
+    password: land_password # Replace with actual password
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      connection-timeout: 20000
+      maximum-pool-size: 10 # Adjust as needed
+
+  jpa:
+    hibernate:
+      ddl-auto: none # Use Flyway for schema management
+      # PostGIS Dialect. Hibernate Spatial usually detects PostGIS dialect automatically
+      # if hibernate-spatial is on classpath and PostGIS extension is enabled.
+      # Explicitly set if needed:
+      # properties.hibernate.dialect: org.hibernate.spatial.dialect.postgis.PostgisDialect # For Hibernate 5/6 check correct dialect
+      # For Hibernate 6, it might be org.hibernate.dialect.PostgreSQLDialect if it includes spatial support
+      # or a specific PostGIS dialect like org.geolatte.geom.codec.db.postgresql.PostgisPGBinaryDialect
+      # Check Hibernate Spatial documentation for Hibernate 6.
+      # Often, PostgreSQLDialect itself has good PostGIS support in Hibernate 6.
+      # Using `org.hibernate.dialect.PostgreSQLDialect` and ensuring `hibernate-spatial` is present usually works.
+      properties:
+        hibernate.dialect: org.hibernate.dialect.PostgreSQLDialect # For Hibernate 6, this often supports PostGIS
+        hibernate.jdbc.lob.non_contextual_creation: true # May be needed for geometry types
+        # hibernate.spatial.enabled: true # This property might not be needed in newer Hibernate versions
+
+    show-sql: true # For development, set to false in production
+    open-in-view: false # Recommended to be false to avoid lazy loading issues
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration # Location of migration scripts
+    baseline-on-migrate: true # If schema already exists, baseline it
+
+  # Liquibase (alternative to Flyway)
+  # liquibase:
+  //   enabled: false
+  #   change-log: classpath:db/changelog/db.changelog-master.yaml
+
+  # Spring Cloud Stream (for event publishing, e.g., RabbitMQ)
+  cloud:
+    stream:
+      function:
+        definition: # Define consumers if any; producers are typically through StreamBridge
+      bindings:
+        # Producer binding for FarmLandRecordCreatedEvent
+        landRecordCreated-out-0: # Matches the binding name in FarmLandRecordEventPublisherImpl
+          destination: land-events # Topic/Exchange name
+          # group: land-service-producer # Optional producer group
+        # Producer binding for FarmLandRecordUpdatedEvent
+        landRecordUpdated-out-0: # Matches the binding name in FarmLandRecordEventPublisherImpl
+          destination: land-events # Topic/Exchange name
+      rabbit: # Example for RabbitMQ
+        binder:
+          nodes: localhost:5672 # RabbitMQ broker address
+          # username: guest
+          # password: guest
+      # kafka: # Example for Kafka
+      #   binder:
+      #     brokers: localhost:9092
+
+logging:
+  level:
+    root: INFO
+    com.thesss.platform.land: DEBUG # More detailed logging for the service
+    org.hibernate.SQL: DEBUG # Log SQL statements (for development)
+    org.hibernate.type.descriptor.sql: TRACE # Log SQL parameters (for development)
+    org.springframework.transaction: DEBUG
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus,env,beans,configprops,mappings,flyway # Expose Actuator endpoints
+  endpoint:
+    health:
+      show-details: when_authorized # Or "always" for easier debugging in dev
+    metrics:
+      enabled: true
+    prometheus:
+      enabled: true
+
+# Resilience4j Configuration (Example)
+resilience4j:
+  circuitbreaker:
+    instances:
+      masterDataService: # Matches the name in @CircuitBreaker annotation
+        registerHealthIndicator: true
+        slidingWindowType: COUNT_BASED
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 5
+        permittedNumberOfCallsInHalfOpenState: 3
+        automaticTransitionFromOpenToHalfOpenEnabled: true
+        waitDurationInOpenState: 5s
+        failureRateThreshold: 50
+        eventConsumerBufferSize: 10
+      approvalWorkflowService:
+        registerHealthIndicator: true
+        # ... similar config
+      cropService:
+        registerHealthIndicator: true
+        # ... similar config
+  retry:
+    instances:
+      masterDataService:
+        maxAttempts: 3
+        waitDuration: 100ms
+        # ... other retry configs
+      # ... other services
+
+# Custom Application Properties for land-service
+app:
+  land-service:
+    geospatial-settings:
+      default-srid-storage: 4326 # SRID for storing geometries (e.g., WGS84)
+      default-srid-calculation: "EPSG:32630" # Example EPSG code for a UTM zone in meters for accurate area calculation. ADJUST THIS.
+      area-discrepancy-threshold-percentage: 10.0 # Percentage threshold for area discrepancy checks
+    parcel-id-validation:
+      uniqueness-region-code: "DEFAULT_REGION" # Default region code for parcel ID uniqueness
+    external-service-endpoints:
+      master-data-service-base-url: http://localhost:8080/api/v1 # Placeholder URL
+      approval-workflow-service-base-url: http://localhost:8081/api/v1 # Placeholder URL
+      crop-service-base-url: http://localhost:8083/api/v1 # Placeholder URL
+      object-storage-service:
+        bucket-name: "land-documents"
+        # Other S3/MinIO settings if client is configured here
+```
