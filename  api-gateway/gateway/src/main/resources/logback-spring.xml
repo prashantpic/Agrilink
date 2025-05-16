@@ -1,17 +1,20 @@
 <configuration>
 
     <springProperty scope="context" name="APP_NAME" source="spring.application.name" defaultValue="api-gateway"/>
-    <springProperty scope="context" name="LOG_LEVEL" source="logging.level.com.thesss.platform.gateway" defaultValue="DEBUG"/>
-    <springProperty scope="context" name="ROOT_LOG_LEVEL" source="logging.level.root" defaultValue="INFO"/>
+    <springProperty scope="context" name="LOG_LEVEL_APP" source="logging.level.com.thesss.platform.gateway" defaultValue="DEBUG"/>
+    <springProperty scope="context" name="LOG_LEVEL_SPRING_GATEWAY" source="logging.level.org.springframework.cloud.gateway" defaultValue="INFO"/>
+    <springProperty scope="context" name="LOG_LEVEL_SPRING_SECURITY" source="logging.level.org.springframework.security" defaultValue="INFO"/>
+    <springProperty scope="context" name="LOG_LEVEL_ROOT" source="logging.level.root" defaultValue="INFO"/>
 
-    <property name="LOG_DIR" value="${LOG_PATH:-logs}"/>
+    <property name="LOG_DIR" value="${LOG_PATH:-./logs}"/>
     <property name="LOG_FILE_NAME" value="${APP_NAME}"/>
-
-    <contextName>${APP_NAME}</contextName>
 
     <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
         <encoder class="net.logstash.logback.encoder.LogstashEncoder">
-            <includeCallerData>false</includeCallerData>
+            <includeMdcKeyName>correlationId</includeMdcKeyName>
+            <includeMdcKeyName>traceId</includeMdcKeyName>
+            <includeMdcKeyName>spanId</includeMdcKeyName>
+            <includeMdcKeyName>parentId</includeMdcKeyName> <!-- For Sleuth-like tracing -->
             <customFields>{"application_name":"${APP_NAME}"}</customFields>
             <fieldNames>
                 <timestamp>timestamp</timestamp>
@@ -21,30 +24,23 @@
                 <logger>logger</logger>
                 <message>message</message>
                 <stackTrace>stack_trace</stackTrace>
-                <context/> <!-- Include contextName -->
             </fieldNames>
-            <!-- Add MDC fields like traceId, spanId -->
-            <mdcKeys>
-                <key>traceId</key>
-                <key>spanId</key>
-                <key>correlationId</key> <!-- Generic correlation ID -->
-                <key>X-Request-ID</key>
-                <key>X-B3-TraceId</key>
-                <key>X-B3-SpanId</key>
-            </mdcKeys>
         </encoder>
     </appender>
 
-    <!-- Optional: File Appender with JSON -->
+    <!-- Example File Appender with JSON -->
     <appender name="FILE_JSON" class="ch.qos.logback.core.rolling.RollingFileAppender">
-        <file>${LOG_DIR}/${LOG_FILE_NAME}.json.log</file>
+        <file>${LOG_DIR}/${LOG_FILE_NAME}.log.json</file>
         <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
-            <fileNamePattern>${LOG_DIR}/${LOG_FILE_NAME}.json.%d{yyyy-MM-dd}.log.gz</fileNamePattern>
-            <maxHistory>30</maxHistory> <!-- Keep 30 days of history -->
-            <totalSizeCap>1GB</totalSizeCap> <!-- Total size of all archive files -->
+            <fileNamePattern>${LOG_DIR}/${LOG_FILE_NAME}.%d{yyyy-MM-dd}.log.json.gz</fileNamePattern>
+            <maxHistory>30</maxHistory> <!-- days to keep -->
+            <totalSizeCap>1GB</totalSizeCap>
         </rollingPolicy>
         <encoder class="net.logstash.logback.encoder.LogstashEncoder">
-            <includeCallerData>false</includeCallerData>
+            <includeMdcKeyName>correlationId</includeMdcKeyName>
+            <includeMdcKeyName>traceId</includeMdcKeyName>
+            <includeMdcKeyName>spanId</includeMdcKeyName>
+            <includeMdcKeyName>parentId</includeMdcKeyName>
             <customFields>{"application_name":"${APP_NAME}"}</customFields>
             <fieldNames>
                 <timestamp>timestamp</timestamp>
@@ -54,87 +50,60 @@
                 <logger>logger</logger>
                 <message>message</message>
                 <stackTrace>stack_trace</stackTrace>
-                <context/>
             </fieldNames>
-            <mdcKeys>
-                <key>traceId</key>
-                <key>spanId</key>
-                <key>correlationId</key>
-                <key>X-Request-ID</key>
-                <key>X-B3-TraceId</key>
-                <key>X-B3-SpanId</key>
-            </mdcKeys>
         </encoder>
     </appender>
 
-    <!-- Optional: Logstash TCP Appender for centralized logging -->
-    <!--
+    <!-- Example Logstash Appender (TCP)
     <appender name="LOGSTASH_TCP" class="net.logstash.logback.appender.LogstashTcpSocketAppender">
-        <destination>${LOGSTASH_DESTINATION:-localhost:5000}</destination>
-        <keepAliveDuration>5 minutes</keepAliveDuration>
+        <destination>${LOGSTASH_DESTINATION:-localhost:5044}</destination>
         <encoder class="net.logstash.logback.encoder.LogstashEncoder">
-            <includeCallerData>false</includeCallerData>
+            <includeMdcKeyName>correlationId</includeMdcKeyName>
+            <includeMdcKeyName>traceId</includeMdcKeyName>
+            <includeMdcKeyName>spanId</includeMdcKeyName>
+            <includeMdcKeyName>parentId</includeMdcKeyName>
             <customFields>{"application_name":"${APP_NAME}"}</customFields>
-            <fieldNames>
-                <timestamp>timestamp</timestamp>
-                <version>[ignore]</version>
-                <level>level</level>
-                <thread>thread</thread>
-                <logger>logger</logger>
-                <message>message</message>
-                <stackTrace>stack_trace</stackTrace>
-                <context/>
-            </fieldNames>
-            <mdcKeys>
-                <key>traceId</key>
-                <key>spanId</key>
-                <key>correlationId</key>
-            </mdcKeys>
         </encoder>
-        <connectionStrategy>
-            <roundRobin>
-                <connectionTTL>5 minutes</connectionTTL>
-            </roundRobin>
-        </connectionStrategy>
-        <writeBufferSize>2048</writeBufferSize>
+        <keepAliveDuration>5 minutes</keepAliveDuration>
     </appender>
     -->
 
-    <logger name="com.thesss.platform.gateway" level="${LOG_LEVEL}" additivity="false">
+    <root level="${LOG_LEVEL_ROOT}">
         <appender-ref ref="CONSOLE_JSON"/>
-        <appender-ref ref="FILE_JSON"/> <!-- Optional -->
-        <!-- <appender-ref ref="LOGSTASH_TCP"/> --> <!-- Optional -->
+        <appender-ref ref="FILE_JSON"/>
+        <!-- <appender-ref ref="LOGSTASH_TCP"/> -->
+    </root>
+
+    <logger name="com.thesss.platform.gateway" level="${LOG_LEVEL_APP}" additivity="false">
+        <appender-ref ref="CONSOLE_JSON"/>
+        <appender-ref ref="FILE_JSON"/>
+        <!-- <appender-ref ref="LOGSTASH_TCP"/> -->
     </logger>
 
-    <logger name="org.springframework.cloud.gateway" level="INFO" additivity="false">
+    <logger name="org.springframework.cloud.gateway" level="${LOG_LEVEL_SPRING_GATEWAY}" additivity="false">
         <appender-ref ref="CONSOLE_JSON"/>
-        <appender-ref ref="FILE_JSON"/> <!-- Optional -->
+        <appender-ref ref="FILE_JSON"/>
+        <!-- <appender-ref ref="LOGSTASH_TCP"/> -->
     </logger>
 
-    <logger name="org.springframework.security" level="INFO" additivity="false">
+    <logger name="org.springframework.security" level="${LOG_LEVEL_SPRING_SECURITY}" additivity="false">
         <appender-ref ref="CONSOLE_JSON"/>
-        <appender-ref ref="FILE_JSON"/> <!-- Optional -->
+        <appender-ref ref="FILE_JSON"/>
+        <!-- <appender-ref ref="LOGSTASH_TCP"/> -->
     </logger>
 
-    <logger name="reactor.netty" level="INFO" additivity="false">
+    <logger name="reactor.netty.http.client" level="INFO" additivity="false">
         <appender-ref ref="CONSOLE_JSON"/>
-        <appender-ref ref="FILE_JSON"/> <!-- Optional -->
+        <appender-ref ref="FILE_JSON"/>
     </logger>
-    
+
     <logger name="io.lettuce.core" level="INFO" additivity="false">
         <appender-ref ref="CONSOLE_JSON"/>
-        <appender-ref ref="FILE_JSON"/> <!-- Optional -->
+        <appender-ref ref="FILE_JSON"/>
     </logger>
 
-    <logger name="org.springframework.boot.actuate.endpoint.web" level="INFO" additivity="false">
-        <appender-ref ref="CONSOLE_JSON"/>
-        <appender-ref ref="FILE_JSON"/> <!-- Optional -->
-    </logger>
-
-    <root level="${ROOT_LOG_LEVEL}">
-        <appender-ref ref="CONSOLE_JSON"/>
-        <appender-ref ref="FILE_JSON"/> <!-- Optional -->
-        <!-- <appender-ref ref="LOGSTASH_TCP"/> --> <!-- Optional -->
-    </root>
+    <!-- Suppress excessive logging from Spring Boot Actuator health checks in Eureka client -->
+    <logger name="com.netflix.discovery.shared.transport.decorator.RedirectingEurekaHttpClient" level="WARN"/>
+    <logger name="com.netflix.discovery.DiscoveryClient" level="WARN"/>
 
 </configuration>
